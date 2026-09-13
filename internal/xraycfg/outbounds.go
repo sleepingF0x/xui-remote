@@ -37,18 +37,7 @@ func Targets(tpl map[string]any) []string {
 			tags = append(tags, ob.Tag)
 		}
 	}
-	if routing, ok := tpl["routing"].(map[string]any); ok {
-		if balancers, ok := routing["balancers"].([]any); ok {
-			for _, b := range balancers {
-				if m, ok := b.(map[string]any); ok {
-					if tag, _ := m["tag"].(string); tag != "" {
-						tags = append(tags, tag)
-					}
-				}
-			}
-		}
-	}
-	return tags
+	return append(tags, BalancerTags(tpl)...)
 }
 
 // RawJSON pretty-prints any section for the detail views.

@@ -3,6 +3,7 @@ package routing
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -437,4 +438,107 @@ func truncateText(s string, max int) string {
 		return s
 	}
 	return string(runes[:max]) + "…"
+}
+
+// pickNewTarget lists every outbound and balancer as a retarget option for an
+// existing rule; only the target field changes, so the rule keeps its position.
+func (m *Module) pickNewTarget(c *bot.Context, idx int) error {
+	rules, err := m.rules()
+	if err != nil {
+		return err
+	}
+	if idx < 0 || idx >= len(rules) {
+		return fmt.Errorf("规则 %d 不存在", idx+1)
+	}
+	tpl, err := m.txn.Inspect()
+	if err != nil {
+		return err
+	}
+	current := rules[idx].Target()
+
+	var rows [][]telego.InlineKeyboardButton
+	var row []telego.InlineKeyboardButton
+	for _, tag := range xraycfg.Targets(tpl) {
+		label := tag
+		if tag == current || tag+" (balancer)" == current {
+			label = "• " + tag
+		}
+		row = append(row, bot.Button(label, c.CallbackData("chgset", strconv.Itoa(idx), c.Stash(tag))))
+		if len(row) == 2 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	rows = append(rows, bot.InlineRow(bot.Button("取消", c.CallbackData("view", strconv.Itoa(idx)))))
+
+	return c.Replace(fmt.Sprintf("<b>规则 %d</b>\n%s\n\n当前出站 <b>%s</b>，改成哪个？",
+		idx+1, bot.Escape(rules[idx].Summary()), bot.Escape(current)), bot.Keyboard(rows...))
+}
+
+func (m *Module) retarget(c *bot.Context, args []string) error {
+	if len(args) < 2 {
+		return nil
+	}
+	idx, err := strconv.Atoi(args[0])
+	if err != nil {
+		return fmt.Errorf("规则序号无效")
+	}
+	tag, ok := c.Unstash(args[1])
+	if !ok {
+		return c.Replace("这个按钮已过期，请重新选择。")
+	}
+	rules, err := m.rules()
+	if err != nil {
+		return err
+	}
+	if idx < 0 || idx >= len(rules) {
+		return fmt.Errorf("规则 %d 不存在", idx+1)
+	}
+	tpl, err := m.txn.Inspect()
+	if err != nil {
+		return err
+	}
+	isBalancer := slices.Contains(xraycfg.BalancerTags(tpl), tag)
+	before := rules[idx].Target()
+	if before == tag {
+		return c.Replace("出站没变。", bot.Keyboard(
+			bot.InlineRow(bot.Button("← 返回", c.CallbackData("view", strconv.Itoa(idx))))))
+	}
+
+	field, values := rules[idx].MatchValues()
+	summary := fmt.Sprintf("规则 %d 出站 %s → %s", idx+1, before, tag)
+	err = m.txn.EditWithChecks("routing", summary, retargetChecks(field, values, tag, idx),
+		func(tpl map[string]any) error {
+			staged, err := xraycfg.Rules(tpl)
+			if err != nil {
+				return err
+			}
+			if idx >= len(staged) {
+				return fmt.Errorf("规则 %d 不存在", idx+1)
+			}
+			staged[idx].SetTarget(tag, isBalancer)
+			xraycfg.SetRules(tpl, staged)
+			return nil
+		})
+	if err != nil {
+		return err
+	}
+	return m.staged(c, summary)
+}
+
+func retargetChecks(field string, values []string, tag string, idx int) []state.Check {
+	if field == "" {
+		return nil
+	}
+	checks := make([]state.Check, 0, maxChecks)
+	for _, v := range values {
+		if len(checks) == maxChecks {
+			break
+		}
+		checks = append(checks, state.Check{Kind: field, Value: v, Expect: tag, Index: idx})
+	}
+	return checks
 }

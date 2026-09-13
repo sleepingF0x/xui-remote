@@ -236,3 +236,67 @@ func TestSuggestPositionNeverLandsInsideTheInfrastructurePrefix(t *testing.T) {
 		t.Fatalf("SuggestPosition() = %d, want 5 (before the catch-all)", got)
 	}
 }
+
+// A rule carrying both an outboundTag and a balancerTag is ambiguous, so
+// retargeting has to clear whichever field it is not setting.
+func TestSetTargetClearsTheOtherTargetingField(t *testing.T) {
+	t.Run("outbound replaces balancer", func(t *testing.T) {
+		r := Rule{Raw: map[string]any{"balancerTag": "auto", "domain": []any{"x"}}}
+		r.SetTarget("hk-dmit", false)
+		if got := r.Raw["outboundTag"]; got != "hk-dmit" {
+			t.Fatalf("outboundTag = %v", got)
+		}
+		if _, still := r.Raw["balancerTag"]; still {
+			t.Fatal("balancerTag must be cleared")
+		}
+		if got := r.Target(); got != "hk-dmit" {
+			t.Fatalf("Target() = %q", got)
+		}
+	})
+	t.Run("balancer replaces outbound", func(t *testing.T) {
+		r := Rule{Raw: map[string]any{"outboundTag": "hk-dmit"}}
+		r.SetTarget("auto", true)
+		if got := r.Raw["balancerTag"]; got != "auto" {
+			t.Fatalf("balancerTag = %v", got)
+		}
+		if _, still := r.Raw["outboundTag"]; still {
+			t.Fatal("outboundTag must be cleared")
+		}
+	})
+}
+
+func TestMatchValuesReportsTheFieldTheRuleActuallyUses(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       map[string]any
+		wantField string
+		wantCount int
+	}{
+		{"domain rule", map[string]any{"domain": []any{"geosite:cn", "domain:a.com"}}, "domain", 2},
+		{"ip rule", map[string]any{"ip": []any{"geoip:cn"}}, "ip", 1},
+		{"no matchers", map[string]any{"network": "tcp"}, "", 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			field, values := Rule{Raw: tt.raw}.MatchValues()
+			if field != tt.wantField || len(values) != tt.wantCount {
+				t.Fatalf("MatchValues() = (%q, %d values), want (%q, %d)",
+					field, len(values), tt.wantField, tt.wantCount)
+			}
+		})
+	}
+}
+
+func TestBalancerTagsReadsRoutingBalancers(t *testing.T) {
+	tpl := map[string]any{"routing": map[string]any{"balancers": []any{
+		map[string]any{"tag": "auto", "selector": []any{"proxy"}},
+		map[string]any{"selector": []any{"x"}}, // no tag: not targetable
+	}}}
+	got := BalancerTags(tpl)
+	if len(got) != 1 || got[0] != "auto" {
+		t.Fatalf("BalancerTags() = %v, want [auto]", got)
+	}
+	if BalancerTags(map[string]any{}) != nil {
+		t.Fatal("a template without routing must yield no balancers")
+	}
+}

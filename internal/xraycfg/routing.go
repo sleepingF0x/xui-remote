@@ -105,6 +105,29 @@ func (r Rule) IsCatchAll() bool {
 	return true
 }
 
+// SetTarget points the rule at tag, clearing the other targeting field so a
+// rule never carries both an outboundTag and a balancerTag.
+func (r Rule) SetTarget(tag string, isBalancer bool) {
+	if isBalancer {
+		r.Raw["balancerTag"] = tag
+		delete(r.Raw, "outboundTag")
+		return
+	}
+	r.Raw["outboundTag"] = tag
+	delete(r.Raw, "balancerTag")
+}
+
+// MatchValues returns the rule's domain or ip matchers, whichever it uses.
+func (r Rule) MatchValues() (field string, values []string) {
+	if v := stringsOf(r.Raw["domain"]); len(v) > 0 {
+		return "domain", v
+	}
+	if v := stringsOf(r.Raw["ip"]); len(v) > 0 {
+		return "ip", v
+	}
+	return "", nil
+}
+
 func (r Rule) Tag() string {
 	s, _ := r.Raw["ruleTag"].(string)
 	return s
@@ -191,6 +214,28 @@ func ClampPosition(rules []Rule, idx int) int {
 		return len(rules)
 	}
 	return idx
+}
+
+// BalancerTags lists routing.balancers, whose tags a rule may target instead
+// of an outbound.
+func BalancerTags(tpl map[string]any) []string {
+	routing, ok := tpl["routing"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	list, ok := routing["balancers"].([]any)
+	if !ok {
+		return nil
+	}
+	var tags []string
+	for _, b := range list {
+		if m, ok := b.(map[string]any); ok {
+			if tag, _ := m["tag"].(string); tag != "" {
+				tags = append(tags, tag)
+			}
+		}
+	}
+	return tags
 }
 
 func reindex(rules []Rule) []Rule {

@@ -43,6 +43,10 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 		return m.confirmDelete(c, atoi(args, 0))
 	case "delgo":
 		return m.deleteRule(c, atoi(args, 0))
+	case "chg":
+		return m.pickNewTarget(c, atoi(args, 0))
+	case "chgset":
+		return m.retarget(c, args)
 	case "moveto":
 		return m.askMoveTo(c, atoi(args, 0))
 	case "up":
@@ -140,7 +144,10 @@ func (m *Module) view(c *bot.Context, idx int) error {
 			bot.Button("↓ 下移", c.CallbackData("down", i)),
 			bot.Button("移到…", c.CallbackData("moveto", i)),
 		),
-		bot.InlineRow(bot.Button("删除", c.CallbackData("del", i))),
+		bot.InlineRow(
+			bot.Button("改出站", c.CallbackData("chg", i)),
+			bot.Button("删除", c.CallbackData("del", i)),
+		),
 		bot.InlineRow(bot.Button("← 返回列表", c.CallbackData("list"))),
 	)
 	return c.Replace(body, kb)
