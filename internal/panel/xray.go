@@ -22,7 +22,7 @@ func (c *Client) GetXraySetting() (*XraySetting, error) {
 		XraySetting     json.RawMessage `json:"xraySetting"`
 		OutboundTestURL string          `json:"outboundTestUrl"`
 	}
-	if err := json.Unmarshal(obj, &body); err != nil {
+	if err := decodeObj(obj, &body); err != nil {
 		return nil, err
 	}
 	return &XraySetting{Template: body.XraySetting, OutboundTestURL: body.OutboundTestURL}, nil
@@ -72,7 +72,7 @@ func (c *Client) RouteTest(req RouteTestRequest) (*RouteTestResult, error) {
 		return nil, err
 	}
 	var res RouteTestResult
-	if err := json.Unmarshal(obj, &res); err != nil {
+	if err := decodeObj(obj, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -105,7 +105,7 @@ func (c *Client) TestOutbounds(outbounds []json.RawMessage, allOutbounds json.Ra
 		return nil, err
 	}
 	var res []OutboundTestResult
-	if err := json.Unmarshal(obj, &res); err != nil {
+	if err := decodeObj(obj, &res); err != nil {
 		return nil, err
 	}
 	return res, nil
@@ -143,7 +143,7 @@ func (c *Client) GeodataEntries(file, code, query string, offset, limit int) (*G
 		return nil, err
 	}
 	var page GeoEntryPage
-	if err := json.Unmarshal(obj, &page); err != nil {
+	if err := decodeObj(obj, &page); err != nil {
 		return nil, err
 	}
 	return &page, nil

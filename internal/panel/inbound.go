@@ -1,7 +1,6 @@
 package panel
 
 import (
-	"encoding/json"
 	"net/url"
 	"strconv"
 )
@@ -26,7 +25,7 @@ func (c *Client) ListInbounds() ([]InboundSlim, error) {
 		return nil, err
 	}
 	var out []InboundSlim
-	if err := json.Unmarshal(obj, &out); err != nil {
+	if err := decodeObj(obj, &out); err != nil {
 		return nil, err
 	}
 	return out, nil

@@ -135,3 +135,19 @@ func (c *Client) send(req *http.Request) (json.RawMessage, error) {
 	}
 	return env.Obj, nil
 }
+
+// decodeObj unmarshals an envelope's obj field, tolerating a double-encoded
+// one: some panel versions serialize obj as a JSON string whose contents are
+// the real payload (3.7.0 does this for /xray/ but not its other endpoints).
+func decodeObj(raw json.RawMessage, v any) error {
+	if err := json.Unmarshal(raw, v); err == nil {
+		return nil
+	} else if len(raw) == 0 || raw[0] != '"' {
+		return err
+	}
+	var inner string
+	if err := json.Unmarshal(raw, &inner); err != nil {
+		return err
+	}
+	return json.Unmarshal([]byte(inner), v)
+}

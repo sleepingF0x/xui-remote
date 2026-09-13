@@ -14,7 +14,7 @@ telegram:
   token: ""
   # 必填。空列表会被拒绝启动 —— 否则任何找到这个 bot 的人都能改配置。
   allowed_chat_ids:
-    - 0
+    - 
 
 state:
   # 暂存区和配置快照存放位置，默认 ~/.xui-remote

@@ -31,7 +31,7 @@ func (c *Client) ListOutboundSubs() ([]OutboundSub, error) {
 		return nil, err
 	}
 	var subs []OutboundSub
-	if err := json.Unmarshal(obj, &subs); err != nil {
+	if err := decodeObj(obj, &subs); err != nil {
 		return nil, err
 	}
 	return subs, nil
@@ -50,11 +50,11 @@ func (c *Client) PreviewOutboundSub(rawURL string) ([]json.RawMessage, error) {
 	var wrapped struct {
 		Outbounds []json.RawMessage `json:"outbounds"`
 	}
-	if err := json.Unmarshal(obj, &wrapped); err == nil && wrapped.Outbounds != nil {
+	if err := decodeObj(obj, &wrapped); err == nil && wrapped.Outbounds != nil {
 		return wrapped.Outbounds, nil
 	}
 	var direct []json.RawMessage
-	if err := json.Unmarshal(obj, &direct); err != nil {
+	if err := decodeObj(obj, &direct); err != nil {
 		return nil, err
 	}
 	return direct, nil
@@ -71,7 +71,7 @@ func (c *Client) CreateOutboundSub(remark, rawURL, tagPrefix string) (*OutboundS
 		return nil, err
 	}
 	var sub OutboundSub
-	if err := json.Unmarshal(obj, &sub); err != nil {
+	if err := decodeObj(obj, &sub); err != nil {
 		return nil, err
 	}
 	return &sub, nil
@@ -102,7 +102,7 @@ func (c *Client) RefreshOutboundSub(id int) ([]json.RawMessage, error) {
 		return nil, err
 	}
 	var obs []json.RawMessage
-	if err := json.Unmarshal(obj, &obs); err != nil {
+	if err := decodeObj(obj, &obs); err != nil {
 		return nil, nil
 	}
 	return obs, nil

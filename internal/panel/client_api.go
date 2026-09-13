@@ -1,7 +1,6 @@
 package panel
 
 import (
-	"encoding/json"
 	"net/url"
 	"strconv"
 )
@@ -52,7 +51,7 @@ func (c *Client) SearchClients(search string, page, pageSize int) (*ClientPage, 
 		return nil, err
 	}
 	var out ClientPage
-	if err := json.Unmarshal(obj, &out); err != nil {
+	if err := decodeObj(obj, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -64,7 +63,7 @@ func (c *Client) ClientTraffic(email string) (*ClientTraffic, error) {
 		return nil, err
 	}
 	var t ClientTraffic
-	if err := json.Unmarshal(obj, &t); err != nil {
+	if err := decodeObj(obj, &t); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -77,7 +76,7 @@ func (c *Client) ClientLinks(email string) ([]string, error) {
 		return nil, err
 	}
 	var links []string
-	if err := json.Unmarshal(obj, &links); err != nil {
+	if err := decodeObj(obj, &links); err != nil {
 		return nil, err
 	}
 	return links, nil
@@ -91,7 +90,7 @@ func (c *Client) SubLinks(subID string) ([]string, error) {
 		return nil, err
 	}
 	var links []string
-	if err := json.Unmarshal(obj, &links); err != nil {
+	if err := decodeObj(obj, &links); err != nil {
 		return nil, err
 	}
 	return links, nil
@@ -111,7 +110,7 @@ func (c *Client) PanelSettings() (*PanelSettings, error) {
 		return nil, err
 	}
 	var s PanelSettings
-	if err := json.Unmarshal(obj, &s); err != nil {
+	if err := decodeObj(obj, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil

@@ -195,3 +195,62 @@ func TestRouteTestOmitsEmptyFields(t *testing.T) {
 		t.Fatal("an empty email must not be sent")
 	}
 }
+
+// 3.7.0 serializes /xray/'s obj as a JSON string whose contents are the real
+// payload, while its other endpoints return a plain object. The decoder has to
+// accept both or the bot breaks against one panel version or the other.
+func TestDecodeObjAcceptsDoubleEncodedPayloads(t *testing.T) {
+	type payload struct {
+		Tag string `json:"tag"`
+		N   int    `json:"n"`
+	}
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"plain object", `{"tag":"hk","n":3}`},
+		{"double encoded", `"{\"tag\":\"hk\",\"n\":3}"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got payload
+			if err := decodeObj(json.RawMessage(tt.raw), &got); err != nil {
+				t.Fatalf("decodeObj: %v", err)
+			}
+			if got.Tag != "hk" || got.N != 3 {
+				t.Fatalf("got %+v", got)
+			}
+		})
+	}
+}
+
+func TestDecodeObjReportsGenuinelyBrokenPayloads(t *testing.T) {
+	var got struct{ Tag string }
+	if err := decodeObj(json.RawMessage(`{"tag":`), &got); err == nil {
+		t.Fatal("truncated JSON must still error")
+	}
+	if err := decodeObj(json.RawMessage(`"not json inside"`), &got); err == nil {
+		t.Fatal("a string that is not encoded JSON must still error")
+	}
+}
+
+func TestGetXraySettingHandlesTheDoubleEncodedEnvelope(t *testing.T) {
+	c := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"success":true,"msg":"","obj":` +
+			`"{\"xraySetting\":{\"routing\":{\"rules\":[]}},\"outboundTestUrl\":\"https://probe/204\"}"}`))
+	})
+	got, err := c.GetXraySetting()
+	if err != nil {
+		t.Fatalf("GetXraySetting: %v", err)
+	}
+	if got.OutboundTestURL != "https://probe/204" {
+		t.Fatalf("OutboundTestURL = %q", got.OutboundTestURL)
+	}
+	var tpl map[string]any
+	if err := json.Unmarshal(got.Template, &tpl); err != nil {
+		t.Fatalf("template unusable: %v", err)
+	}
+	if _, ok := tpl["routing"]; !ok {
+		t.Fatalf("template lost routing: %s", got.Template)
+	}
+}

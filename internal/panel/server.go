@@ -1,7 +1,5 @@
 package panel
 
-import "encoding/json"
-
 // Status is the subset of the panel's /server/status payload the bot renders.
 type Status struct {
 	Cpu float64 `json:"cpu"`
@@ -25,7 +23,7 @@ func (c *Client) Status() (*Status, error) {
 		return nil, err
 	}
 	var s Status
-	if err := json.Unmarshal(obj, &s); err != nil {
+	if err := decodeObj(obj, &s); err != nil {
 		return nil, err
 	}
 	return &s, nil
@@ -39,7 +37,7 @@ func (c *Client) XrayResult() (string, error) {
 		return "", err
 	}
 	var out string
-	if err := json.Unmarshal(obj, &out); err != nil {
+	if err := decodeObj(obj, &out); err != nil {
 		return string(obj), nil
 	}
 	return out, nil
