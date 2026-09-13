@@ -241,33 +241,41 @@ func (m *Module) run(c *bot.Context, p probe, replace bool) error {
 			sb.WriteString("\n经过负载均衡: " + bot.Escape(strings.Join(res.GroupTags, " → ")))
 		}
 	}
-	if p.Email == "" {
-		if n := m.userScopedRules(); n > 0 {
-			sb.WriteString(fmt.Sprintf("\n\n⚠️ 有 <b>%d</b> 条规则限定了用户，不指定用户时它们永远匹配不上。", n))
-		}
+	d := m.discriminators()
+	if p.Email == "" && d.user > 0 {
+		sb.WriteString(fmt.Sprintf("\n\n⚠️ 有 <b>%d</b> 条规则限定了用户，不指定用户时它们永远匹配不上。", d.user))
+	}
+	if d.anyUnused() {
+		sb.WriteString("\n\n<i>" + bot.Escape(unusedNote(d)) + "</i>")
 	}
 
 	token := c.Stash(p.encode())
-	userLabel := "指定用户…"
-	if p.Email != "" {
-		userLabel = "换用户…"
-	}
-	kb := bot.Keyboard(
-		bot.InlineRow(
+	var rows [][]telego.InlineKeyboardButton
+	if !d.known || d.port > 0 {
+		rows = append(rows, bot.InlineRow(
 			bot.Button(portLabel(p, 80), c.CallbackData("port", token, "80")),
 			bot.Button(portLabel(p, 443), c.CallbackData("port", token, "443")),
 			bot.Button("端口…", c.CallbackData("askport", token)),
-		),
-		bot.InlineRow(
+		))
+	}
+	if !d.known || d.network > 0 {
+		rows = append(rows, bot.InlineRow(
 			bot.Button(netLabel(p, "tcp"), c.CallbackData("net", token, "tcp")),
 			bot.Button(netLabel(p, "udp"), c.CallbackData("net", token, "udp")),
-		),
-		bot.InlineRow(bot.Button(userLabel, c.CallbackData("askuser", token))),
-		bot.InlineRow(
-			bot.Button("重新测试", c.CallbackData("run", token)),
-			bot.Home(),
-		),
-	)
+		))
+	}
+	if !d.known || d.user > 0 {
+		userLabel := "指定用户…"
+		if p.Email != "" {
+			userLabel = "换用户…"
+		}
+		rows = append(rows, bot.InlineRow(bot.Button(userLabel, c.CallbackData("askuser", token))))
+	}
+	rows = append(rows, bot.InlineRow(
+		bot.Button("重新测试", c.CallbackData("run", token)),
+		bot.Home(),
+	))
+	kb := bot.Keyboard(rows...)
 	if replace {
 		return c.Replace(sb.String(), kb)
 	}
@@ -282,6 +290,19 @@ func describe(p probe) string {
 		user = "用户 " + p.Email
 	}
 	return fmt.Sprintf("%s · 端口 %d · %s", strings.ToUpper(p.Network), p.Port, user)
+}
+
+// unusedNote names the parameters this rule set ignores, so their absence
+// reads as a fact about the config rather than a missing feature.
+func unusedNote(d discriminators) string {
+	var unused []string
+	if d.port == 0 {
+		unused = append(unused, "端口")
+	}
+	if d.network == 0 {
+		unused = append(unused, "协议")
+	}
+	return "当前规则不区分" + strings.Join(unused, "和") + "，改这些不会影响结果。"
 }
 
 func portLabel(p probe, port int) string {
@@ -301,25 +322,57 @@ func netLabel(p probe, network string) string {
 	return label
 }
 
-// userScopedRules counts rules that can only match when a user is supplied.
-func (m *Module) userScopedRules() int {
+// discriminators counts how many rules actually narrow on each probe
+// parameter. A parameter no rule reads cannot change the answer, so offering
+// a control for it only invites the question of what it is for.
+type discriminators struct {
+	port    int
+	network int
+	user    int
+	known   bool
+}
+
+func (d discriminators) anyUnused() bool {
+	return d.known && (d.port == 0 || d.network == 0)
+}
+
+func (m *Module) discriminators() discriminators {
 	setting, err := m.panel.GetXraySetting()
 	if err != nil {
-		return 0
+		return discriminators{}
 	}
 	tpl, err := xraycfg.ParseTemplate(setting.Template)
 	if err != nil {
-		return 0
+		return discriminators{}
 	}
 	rules, err := xraycfg.Rules(tpl)
 	if err != nil {
-		return 0
+		return discriminators{}
 	}
-	n := 0
+	d := discriminators{known: true}
 	for _, r := range rules {
-		if items, ok := r.Raw["user"].([]any); ok && len(items) > 0 {
-			n++
+		if narrows(r.Raw["port"]) {
+			d.port++
+		}
+		if narrows(r.Raw["network"]) {
+			d.network++
+		}
+		if narrows(r.Raw["user"]) {
+			d.user++
 		}
 	}
-	return n
+	return d
+}
+
+func narrows(v any) bool {
+	switch t := v.(type) {
+	case nil:
+		return false
+	case string:
+		return t != ""
+	case []any:
+		return len(t) > 0
+	default:
+		return true
+	}
 }

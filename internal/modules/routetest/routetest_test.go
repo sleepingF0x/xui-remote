@@ -64,3 +64,55 @@ func TestNetLabelReadsAsASettingNotAVerb(t *testing.T) {
 		}
 	}
 }
+
+func TestNarrowsTreatsEmptyValuesAsNoConstraint(t *testing.T) {
+	tests := []struct {
+		name string
+		v    any
+		want bool
+	}{
+		{"absent", nil, false},
+		{"empty string", "", false},
+		{"empty list", []any{}, false},
+		{"port string", "443", true},
+		{"user list", []any{"admin"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := narrows(tt.v); got != tt.want {
+				t.Fatalf("narrows(%#v) = %v, want %v", tt.v, got, tt.want)
+			}
+		})
+	}
+}
+
+// A parameter no rule reads cannot change the answer, so the screen says so
+// instead of leaving a control whose purpose has to be guessed.
+func TestUnusedNoteNamesOnlyTheIgnoredParameters(t *testing.T) {
+	tests := []struct {
+		name string
+		d    discriminators
+		want string
+	}{
+		{"neither used", discriminators{known: true}, "当前规则不区分端口和协议，改这些不会影响结果。"},
+		{"port used", discriminators{known: true, port: 2}, "当前规则不区分协议，改这些不会影响结果。"},
+		{"network used", discriminators{known: true, network: 1}, "当前规则不区分端口，改这些不会影响结果。"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := unusedNote(tt.d); got != tt.want {
+				t.Fatalf("unusedNote() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAnyUnusedStaysQuietWhenTheConfigCouldNotBeRead(t *testing.T) {
+	// An unreadable template must not claim the rules ignore anything.
+	if (discriminators{}).anyUnused() {
+		t.Fatal("an unknown rule set must make no claim about unused parameters")
+	}
+	if (discriminators{known: true, port: 1, network: 1}).anyUnused() {
+		t.Fatal("nothing is unused when both are read by some rule")
+	}
+}
