@@ -22,6 +22,7 @@ import (
 	"github.com/lichenhao/xui-remote/internal/panel"
 	"github.com/lichenhao/xui-remote/internal/state"
 	"github.com/lichenhao/xui-remote/internal/txn"
+	"github.com/lichenhao/xui-remote/internal/verify"
 )
 
 func main() {
@@ -66,7 +67,7 @@ func main() {
 		outbound.New(api, manager),
 		inbound.New(api),
 		routetest.New(api),
-		configtxn.New(manager),
+		configtxn.New(manager, verify.New(api)),
 		client.New(api),
 		status.New(api),
 	)

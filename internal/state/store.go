@@ -25,6 +25,21 @@ type StagedEntry struct {
 	At      time.Time `json:"at"`
 	Module  string    `json:"module"`
 	Summary string    `json:"summary"`
+	// Checks are assertions to run after the apply lands. routeTest only
+	// reflects the running core, so this is the earliest a change can be
+	// verified at all.
+	Checks []Check `json:"checks,omitempty"`
+}
+
+// Check asserts that traffic matching Value ends up on Expect. Value may be a
+// literal destination or a geosite/geoip token that has to be resolved to one.
+type Check struct {
+	Kind   string `json:"kind"`
+	Value  string `json:"value"`
+	Expect string `json:"expect"`
+	// Index is where the rule was placed, so a failure can name the earlier
+	// rule that is shadowing it.
+	Index int `json:"index"`
 }
 
 type Snapshot struct {

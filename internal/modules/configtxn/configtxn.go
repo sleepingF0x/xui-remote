@@ -5,20 +5,25 @@ package configtxn
 import (
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/mymmrac/telego"
 
 	"github.com/lichenhao/xui-remote/internal/bot"
+	"github.com/lichenhao/xui-remote/internal/state"
 	"github.com/lichenhao/xui-remote/internal/txn"
+	"github.com/lichenhao/xui-remote/internal/verify"
+	"github.com/lichenhao/xui-remote/internal/xraycfg"
 )
 
 type Module struct {
-	txn *txn.Manager
+	txn      *txn.Manager
+	verifier *verify.Verifier
 }
 
-func New(t *txn.Manager) *Module { return &Module{txn: t} }
+func New(t *txn.Manager, v *verify.Verifier) *Module { return &Module{txn: t, verifier: v} }
 
 func (m *Module) Name() string  { return "config" }
 func (m *Module) Title() string { return "⚙️ 配置" }
@@ -126,10 +131,94 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 		sb.WriteString("• " + bot.Escape(e.Summary) + "\n")
 	}
 	sb.WriteString(fmt.Sprintf("\n快照 <code>%s</code> 已保存，可回滚。", res.Snapshot.ID))
-	return c.Replace(sb.String(), bot.Keyboard(
-		bot.InlineRow(bot.Button("🧪 去测试路由", "rtest:menu")),
-		bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", res.Snapshot.ID))),
-	))
+
+	var checks []state.Check
+	for _, e := range res.Applied {
+		checks = append(checks, e.Checks...)
+	}
+	if len(checks) == 0 {
+		return c.Replace(sb.String(), bot.Keyboard(
+			bot.InlineRow(bot.Button("🧪 去测试路由", "rtest:menu")),
+			bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", res.Snapshot.ID))),
+		))
+	}
+	// Report the apply before verifying: the probes take a few seconds each and
+	// the operator should not be left wondering whether the write landed.
+	sb.WriteString(fmt.Sprintf("\n\n正在验证 %d 项…", len(checks)))
+	if err := c.Replace(sb.String()); err != nil {
+		return err
+	}
+	return m.report(c, m.verifier.Run(checks), res.Snapshot.ID)
+}
+
+// report renders verification results and, for a rule that did not take
+// effect, names the earlier rule that most likely swallowed it.
+func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID string) error {
+	var sb strings.Builder
+	passed, failed := 0, 0
+	for _, r := range results {
+		switch {
+		case !r.Verified():
+			sb.WriteString(fmt.Sprintf("➖ %s\n    <i>%s</i>\n", bot.Escape(r.Source), bot.Escape(r.Skipped)))
+		case r.OK:
+			passed++
+			sb.WriteString(fmt.Sprintf("✅ %s\n    取样 %s → %s\n",
+				bot.Escape(r.Source), bot.Escape(r.Target), bot.Escape(r.Actual)))
+		default:
+			failed++
+			sb.WriteString(fmt.Sprintf("❌ %s\n    取样 %s → <b>%s</b>，期望 <b>%s</b>\n",
+				bot.Escape(r.Source), bot.Escape(r.Target), bot.Escape(r.Actual), bot.Escape(r.Expect)))
+			if idx, ok := m.shadowedBy(r); ok {
+				sb.WriteString(fmt.Sprintf("    <i>可能被第 %d 条规则遮蔽</i>\n", idx+1))
+			}
+		}
+	}
+
+	head := fmt.Sprintf("<b>验证 %d/%d 通过</b>\n\n", passed, passed+failed)
+	if failed == 0 {
+		return c.Send(head + sb.String())
+	}
+
+	var rows [][]telego.InlineKeyboardButton
+	if idx, ok := failingRuleIndex(results); ok {
+		rows = append(rows, bot.InlineRow(
+			bot.Button(fmt.Sprintf("调整第 %d 条的位置", idx+1), bot.CallbackData("route", "moveto", strconv.Itoa(idx)))))
+	}
+	rows = append(rows, bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", snapshotID))))
+	return c.Send("⚠️ "+head+sb.String()+
+		"\n<i>规则已写入但没生效。分类之间的重叠算不出来，所以这只能在提交后发现。</i>",
+		bot.Keyboard(rows...))
+}
+
+// shadowedBy looks for an earlier rule pointing at the outbound the traffic
+// actually took — the usual explanation for a rule that never fires.
+func (m *Module) shadowedBy(r verify.Result) (int, bool) {
+	tpl, err := m.txn.Inspect()
+	if err != nil {
+		return 0, false
+	}
+	rules, err := xraycfg.Rules(tpl)
+	if err != nil {
+		return 0, false
+	}
+	for _, rule := range rules {
+		if rule.Index >= r.Index {
+			break
+		}
+		if rule.Target() == r.Actual {
+			return rule.Index, true
+		}
+	}
+	return 0, false
+}
+
+func failingRuleIndex(results []verify.Result) (int, bool) {
+	for _, r := range results {
+		if r.Verified() && !r.OK {
+			return r.Index, true
+		}
+	}
+	return 0, false
 }
 
 func (m *Module) confirmDiscard(c *bot.Context) error {

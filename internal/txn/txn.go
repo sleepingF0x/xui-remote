@@ -33,6 +33,11 @@ var ErrNothingStaged = errors.New("暂存区是空的")
 // Edit applies mutate to the staged draft, opening staging from the live
 // template on first use. Nothing reaches the panel until Apply.
 func (m *Manager) Edit(module, summary string, mutate func(tpl map[string]any) error) error {
+	return m.EditWithChecks(module, summary, nil, mutate)
+}
+
+// EditWithChecks is Edit plus assertions to verify once the change is applied.
+func (m *Manager) EditWithChecks(module, summary string, checks []state.Check, mutate func(tpl map[string]any) error) error {
 	st, err := m.store.LoadStaging()
 	if errors.Is(err, state.ErrNoStaging) {
 		live, liveErr := m.panel.GetXraySetting()
@@ -56,7 +61,9 @@ func (m *Manager) Edit(module, summary string, mutate func(tpl map[string]any) e
 		return err
 	}
 	st.Draft = draft
-	st.Entries = append(st.Entries, state.StagedEntry{At: time.Now(), Module: module, Summary: summary})
+	st.Entries = append(st.Entries, state.StagedEntry{
+		At: time.Now(), Module: module, Summary: summary, Checks: checks,
+	})
 	return m.store.SaveStaging(st)
 }
 

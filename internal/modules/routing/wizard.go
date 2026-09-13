@@ -9,6 +9,7 @@ import (
 	"github.com/mymmrac/telego"
 
 	"github.com/lichenhao/xui-remote/internal/bot"
+	"github.com/lichenhao/xui-remote/internal/state"
 	"github.com/lichenhao/xui-remote/internal/xraycfg"
 )
 
@@ -358,7 +359,7 @@ func (m *Module) stage(c *bot.Context, d draft, pos int) error {
 
 	summary := fmt.Sprintf("新增规则 @%d (%s: %s → %s)",
 		pos+1, field, strings.Join(d.Values, ", "), d.Target)
-	err = m.txn.Edit("routing", summary, func(tpl map[string]any) error {
+	err = m.txn.EditWithChecks("routing", summary, buildChecks(d, field, pos), func(tpl map[string]any) error {
 		rules, err := xraycfg.Rules(tpl)
 		if err != nil {
 			return err
@@ -411,6 +412,23 @@ func atoi(args []string, i int) int {
 		return -1
 	}
 	return n
+}
+
+// maxChecks bounds post-apply verification: a rule listing fifty domains does
+// not need fifty route tests to show whether it took effect.
+const maxChecks = 3
+
+func buildChecks(d draft, field string, pos int) []state.Check {
+	checks := make([]state.Check, 0, maxChecks)
+	for _, v := range d.Values {
+		if len(checks) == maxChecks {
+			break
+		}
+		checks = append(checks, state.Check{
+			Kind: field, Value: v, Expect: d.Target, Index: pos,
+		})
+	}
+	return checks
 }
 
 func truncateText(s string, max int) string {
