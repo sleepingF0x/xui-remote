@@ -1,3 +1,14 @@
+# 含 admin API token 和 bot token
 config.yaml
-xui-remote
+
+# 构建产物
+/xui-remote
+/xui-remote-linux
 /dist/
+
+# Go
+*.test
+*.out
+coverage.*
+
+.DS_Store
