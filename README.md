@@ -1,204 +1,218 @@
 # xui-remote
 
-通过 Telegram 远程配置 3x-ui 面板。纯 REST API 客户端 —— 不碰服务器文件系统、不需要
-git、不需要 Docker，只要一个 admin scope 的 API token。
+在 Telegram 上改 3x-ui 的路由 —— 并且知道改完之后规则**真的生效了**。
+
+纯 REST 客户端：不碰服务器文件系统，不需要 git 或 Docker，只要一个 admin API token。
 
 ```
-🔀 路由     列表 / 新增 / 改出站 / 改匹配值 / 调序 / 删除
-📡 出站     列表 / 健康检查 / 订阅管理 / 删除
-🚪 入站     列表 / 启停
-🧪 路由测试  域名或 IP → 命中哪个出站，可指定用户身份
-⚙️ 配置     暂存区 / 提交 / 丢弃 / 快照 / 回滚
-👥 客户端   列表 / 搜索 / 订阅链接 / 二维码 / 流量
-📊 状态     Xray 状态 / 错误输出 / 重启
+你:  🔀 路由 → 14 → 改出站 → hk-dmit
+bot: ✅ 已暂存：规则 14 出站 tw-gcp → hk-dmit
+     还未生效，到「⚙️ 配置」提交。
+
+你:  ⚙️ 配置 → 提交
+bot: ✅ 已提交，Xray 已重启
+     ⚠️ 验证 0/1 通过
+
+     ❌ ext:custom.dat:CRYPTO-HK
+         取样 bluefin.io → tw-gcp，期望 hk-dmit
+         可能被第 15 条规则遮蔽
+
+     [调整第 14 条的位置] [回滚这次改动]
 ```
 
 ---
 
-## 它做了面板和自带 bot 不做的事
-
-面板自带的 tgbot 偏通知，面板 UI 偏完整编辑。这个工具补的是**中间那段：在手机上安全地改路由，并且知道改动是否真的生效**。
-
-### 1. 配置事务：攒着改，一次落地
-
-`/panel/api/xray/update` 是**整份配置替换并重启 Xray**。每改一处就提交，等于每改一处断一次所有连接。
-
-所以这里所有编辑先进暂存区，`⚙️ 配置 → 提交` 一次落地 = 一次重启。提交前可以 `/diff`
-看全部改动，也可以整批丢弃。
-
-### 2. 提交前自动快照，随时回滚
-
-每次提交前，先把**从面板读回来的线上配置**存一份快照 —— 不是 bot 记忆的状态。中途有人
-在网页面板改过，快照也是真实的线上样子。
-
-回滚是整份写回，所以界面上明确写着它会一并撤销该快照之后的所有配置改动，以及**入站、
-客户端、出站订阅不在快照范围内**（那些存在数据库里，由面板在生成配置时合并）。
-
-### 3. 并发冲突会拦下，不会覆盖
-
-暂存区记录开始编辑时的线上配置，提交前重新读一次比对。网页面板在这期间改过就报冲突，
-给出「仍然覆盖 / 丢弃重做」两个选择，而不是默默盖掉别人的改动。
-
-比对按值不按字节 —— 否则每次提交后重新序列化都会误报。
-
-### 4. 提交后自动验证规则是否真的生效
-
-**写进配置 ≠ 规则生效。** 一条更靠前的规则覆盖同类流量，新规则就永远不触发，而且没有
-任何征兆。
-
-所以提交后会自动验证：字面域名直接测，分类则取一个真实成员做样本（跳过 keyword /
-regexp 这类无法取样的条目），调 `routeTest` 比对实际出站。
-
-```
-✅ 已提交，Xray 已重启
-✗ 验证 0/1
-
-❌ ext:custom.dat:CRYPTO-HK
-    取样 bluefin.io → tw-gcp，期望 hk-dmit
-    可能被第 15 条规则遮蔽
-
-[调整第 14 条的位置] [回滚这次改动]
-```
-
-这是**唯一能验证的时机** —— `routeTest` 打的是运行中的 core，没法对未生效的配置做
-dry-run。而分类之间的重叠（新域名已经落在 `category-entertainment` 里）算不出来，只能
-落地后实测发现。
-
-只有真的找到一条更靠前、且指向实际出站的规则时才说"遮蔽"；否则只陈述事实。断言一个没被
-验证过的原因，会把排查方向带偏。
-
-### 5. 顺序是路由的全部语义，所以处处设防
-
-- **基础设施前缀不可侵入。** 一套 3x-ui 配置开头是 api 路由、私有地址封锁、协议封锁 ——
-  这些规则的**顺序是承重的**：api 入站监听 127.0.0.1，它自己的流量匹配 `geoip:private`，
-  所以 api 规则排到私有地址封锁后面，面板的 gRPC API 就会被 blocked 吃掉，流量统计、
-  在线用户、连路由测试本身全部失效。新规则插不进这段，往上移也会被拒绝并说明原因。
-- **推荐插入位在第一个 catch-all 之前**，因为它之后的规则不会生效。`inboundTag` 算收窄
-  条件 —— 限定入站的规则对其他入站的流量不构成遮蔽。
-- **位置可以自己填**，填之前先把当前顺序列出来（不看列表没法答"插第几位"）。填了不允许
-  的位置**报错而不是夹到合法值** —— 你会以为插在第 2 位而实际在第 4 位。
-
-### 6. 知道哪些规则"不指定用户就测不到"
-
-带 `user` 约束的规则，对不指定身份的探测永远不可达。路由测试会：
-
-- 结果里写明测试参数（协议 / 端口 / 用户）
-- 存在 user 规则而你没指定时，警告它们不参与匹配
-- 直接列出客户端按钮，点一下就以那个身份重测
-
-验证断言也会带上**规则自己的 user 约束**，否则改一条 user 规则的出站会永远验证失败。
-
-### 7. 控件跟着配置走
-
-只显示这套配置真正用得上的东西：没有 balancer 就不显示负载均衡；规则不按端口分流就不
-提供端口参数，并说明为什么没有。读不到配置时**反而全部显示** —— 那时候断言"某个参数没
-用"没有依据。
-
-### 8. 视图会说明自己展示的是草稿还是线上
-
-规则列表渲染的是暂存草稿，路由测试打的是运行中的 core。两边各自都对，但不说明就会读成
-"配了没生效"。列表标出 ✏️ 草稿规则，测试结果注明它反映的是线上配置。
-
-### 9. `-selftest`：对着真面板跑一遍所有读路径
-
-```bash
-./xui-remote -selftest
-```
-
-只读，不写任何东西。读配置模板并解析规则与出站、routeTest、分类取样、订阅链接，最后断言
-**生成的链接没有指向客户端到不了的地址**（loopback、tailnet、私有网段）。
-
-单元测试挡不住面板版本改序列化 —— 那恰恰是生产环境第一个暴露的问题。部署到新面板、或
-面板升级之后，先跑这个。
-
----
-
-## 安装
+## 快速开始
 
 ```bash
 go build -o xui-remote .
-cp config.example.yaml config.yaml    # 填两个 token
-./xui-remote -check                   # 只验证面板连通性
-./xui-remote -selftest                # 跑一遍所有读路径
-./xui-remote
+cp config.example.yaml config.yaml
 ```
 
-### 部署到面板所在的服务器
+填三个值：
+
+| 字段 | 从哪来 |
+|---|---|
+| `panel.base_url` | `x-ui settings` 看 port 和 webBasePath，拼成 `http://127.0.0.1:<port><basePath>panel/api/` |
+| `panel.api_token` | 面板 → 设置 → 安全 → API 令牌 → 新建（只填名称，scope 默认 admin）。**明文只显示一次** |
+| `telegram.token` + `allowed_chat_ids` | @BotFather `/newbot`；chat id 可用 @userinfobot 查 |
+
+然后：
 
 ```bash
-GOOS=linux GOARCH=amd64 go build -o xui-remote-linux .
-scp xui-remote-linux $HOST:/usr/local/bin/xui-remote
-scp xui-remote.service $HOST:/etc/systemd/system/
-ssh $HOST 'mkdir -p /etc/xui-remote /var/lib/xui-remote'
-scp config.yaml $HOST:/etc/xui-remote/
-ssh $HOST 'systemctl daemon-reload && systemctl enable --now xui-remote'
+./xui-remote -check      # 只验证面板连通性
+./xui-remote -selftest   # 跑一遍所有读路径（只读）
+./xui-remote             # 启动
 ```
 
-**在面板本机跑时 `base_url` 要用 `127.0.0.1`**，不能用 tailnet 域名 —— 机器通常解析不了
-自己的 MagicDNS 名字。
+Telegram 里对 bot 发 `/start`。
+
+> `base_url` 里 `panel` 可能出现两次：`webBasePath` 是 `/panel/`、API 路由组是
+> `/panel/api`，拼起来就是 `/panel/panel/api/`。
 
 ---
 
-## 配置
+## 怎么用
 
-见 `config.example.yaml`。三处容易踩：
+入口是输入框上方的常驻键盘，每个画面都有返回。
 
-**`base_url` 里 panel 会出现两次。** 面板的 `webBasePath` 若是 `/panel/`，而 API 路由组是
-`/panel/api`，拼起来就是 `/panel/panel/api/`。用 `x-ui settings` 查自己的 `webBasePath`。
-
-**`api_token` 必须是 admin scope。** 面板 → 设置 → 安全 → API 令牌 → 新建令牌。弹窗只要
-一个名称，scope 留空即默认 admin。**明文只显示一次**，库里存的是 SHA-256 哈希。
-
-**`allowed_chat_ids` 不能为空**，否则拒绝启动 —— admin token 等于面板完整控制权，没有
-白名单意味着任何找到这个 bot 的人都能改配置。不在名单里的消息直接丢弃，不回应。
-
----
-
-## 面板版本差异
-
-这些是对着 3x-ui v3.7.0 实测出来的，代码里都做了兼容：
-
-| 现象 | 处理 |
+| 菜单 | 能做什么 |
 |---|---|
-| `/xray/` 的 `obj` 是**双重编码**的 JSON 字符串，其他接口是普通对象 | 解码层统一兼容两种形状 |
-| `/clients/links/:email` **不查 hosts 表**，地址从请求 Host 推导、端口用入站内部端口 | 分享链接改用 `/clients/subLinks/:subId`（走订阅引擎，认 hosts 表，且不受请求 Host 影响） |
-| geodata 条目返回 `{total, items:[{kind,value}]}`，不是带前缀的字符串列表 | 按 `kind` 判断可否取样 |
-| `geosite:` / `geoip:` 不带文件名，而面板拒绝空文件名 | 按前缀补 `geosite.dat` / `geoip.dat` |
+| 🔀 **路由** | 规则列表（分页 / 筛选 / 发序号选中）、新增、改出站、改匹配值、调序、删除 |
+| 📡 **出站** | 出站列表、健康检查（实测各节点延迟）、订阅管理、删除 |
+| 🚪 **入站** | 列表、启停 |
+| 🧪 **路由测试** | 域名或 IP → 命中哪个出站，可切换用户身份 |
+| ⚙️ **配置** | 暂存区、提交、丢弃、配置快照、回滚 |
+| 👥 **客户端** | 列表、搜索、订阅链接、二维码、流量与到期 |
+| 📊 **状态** | Xray 状态、错误输出、重启 |
 
-`public_host` 只在面板没有为入站配置 host 条目时才需要 —— 它覆盖 Host 头，让生成的链接
-带上客户端够得着的地址。
+也可以**直接发内容**，bot 会列出候选动作让你选：域名/IP → 查路由，邮箱 → 看客户端，
+订阅链接 → 加为出站订阅。
+
+### 典型流程：让一个域名改走香港
+
+```
+1. 发送 newdex.io        → 点「查当前路由」，看当前走哪
+2. 🔀 路由 → + 新增规则   → 选出站 → 填域名 → 选插入位置
+3. ⚙️ 配置 → 查看 diff    → 提交（一次重启）
+4. 提交后自动验证，不通过会指出可能遮蔽它的规则，并给回滚按钮
+```
+
+### 常用斜杠命令
+
+```
+/rules  /outbounds  /inbounds  /test <域名>  /client <标识>
+/diff   /apply      /rollback  /status       /health
+```
 
 ---
 
-## 刻意没做
+## 它在替你防什么
 
-**改入站端口。** `/inbounds/update/:id` 要提交完整 inbound 对象，而 `list/slim` 会剥掉
-settings、`model.Inbound` 的序列化与反序列化形状又不一致，GET→POST 往返有丢字段进而损坏
-入站的风险。面板 UI 做这件事是安全的。
+改路由比看上去危险，这些是工具挡在前面的东西。
 
-**新建入站。** 协议、传输、TLS/REALITY 几十个字段，在 Telegram 上配不出来。
+**改动先暂存，一次提交。** 面板的保存是整份配置替换并重启 Xray，一处一提交等于一处断
+一次全部连接。编辑先进暂存区，`⚙️ 配置` 里看完整 diff 再一次落地。
 
-**客户端增删改、告警推送、数据库备份。** 面板自带 tgbot 已经覆盖，这个 bot 专注它做不了
-的配置面。两者可以并存，但**别共用一个 bot token** —— 两个进程对同一 token 做 long
-polling 会互相抢 update。
+**提交前自动快照，可回滚。** 存的是从面板读回来的**线上**配置 —— 中途有人在网页面板改
+过，快照也是真实的样子。回滚是整份写回，界面会说明它一并撤销哪些改动。
+
+**并发冲突会拦下。** 你开始编辑之后有人动过面板，提交时报冲突并给出「覆盖 / 丢弃重做」，
+不会默默盖掉。
+
+**提交后验证规则真的生效。** 写进配置 ≠ 规则生效：一条更靠前的规则覆盖同类流量，新规则
+永远不触发且没有征兆。提交后会取样实测（分类取一个真实成员），不通过就报出来。
+
+> 这是唯一能验证的时机 —— `routeTest` 打的是运行中的 core，没法对未生效的配置做 dry-run。
+
+**顺序防护。** 一套 3x-ui 配置开头是 api 路由、私有地址封锁、协议封锁，这几条的顺序是
+**承重的**：api 入站监听 127.0.0.1，它的流量匹配 `geoip:private`，所以 api 规则排到封锁
+规则后面，面板的 gRPC 就瞎了 —— 流量统计、在线用户、连路由测试本身全部失效。
+
+新规则插不进这段，往上移也会被拒绝并说明原因。推荐插入位落在第一个 catch-all 之前。
+
+**用户约束感知。** 带 `user` 的规则对不指定身份的探测永远不可达。路由测试会警告并让你
+选身份，验证断言也会带上规则自己的 user 约束。
+
+**视图会说明自己是草稿还是线上。** 规则列表渲染暂存草稿，路由测试打运行中的 core ——
+列表标 ✏️，测试结果注明它反映线上配置。
 
 ---
 
-## 加功能
+## 部署到服务器
 
-模块通过 `bot.Register` 注册，不需要动框架：实现 `Module` 接口，按需再实现 `Commander`
-（斜杠命令）、`TextMatcher`（裸文本候选动作）、`Prompter` / `PayloadPrompter`（追问）。
+```bash
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tmp/xr .
+scp /tmp/xr $HOST:/tmp/xui-remote
+scp xui-remote.service $HOST:/tmp/
+scp config.yaml $HOST:/tmp/xui-remote-config.yaml
+
+ssh $HOST 'sudo bash -s' <<'EOF'
+id xui-remote >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin xui-remote
+install -m 0755 /tmp/xui-remote /usr/local/bin/xui-remote
+install -d -m 0750 -o root -g xui-remote /etc/xui-remote
+install -m 0640 -o root -g xui-remote /tmp/xui-remote-config.yaml /etc/xui-remote/config.yaml
+install -m 0644 /tmp/xui-remote.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now xui-remote
+EOF
+```
+
+服务不以 root 运行；暂存区和快照放在 systemd 的 `StateDirectory`（`/var/lib/xui-remote`），
+重启后保留。
+
+```bash
+systemctl status xui-remote
+journalctl -u xui-remote -f
+```
+
+**跑在面板本机时 `base_url` 必须用 `127.0.0.1`** —— 机器通常解析不了自己的 MagicDNS 名字。
+跑在同一 tailnet 的其他机器上，用 `tailscale serve` 的地址（真证书，无需跳过校验）。
+
+---
+
+## 排查
+
+| 现象 | 原因 |
+|---|---|
+| `认证失败：检查 api_token` | token 无效、被禁用，或不是 admin scope |
+| 响应不是 JSON，带一段 HTML | `base_url` 路径不对，请求打到了面板前端 |
+| 规则列表和路由测试对不上 | 有改动还在暂存区没提交，看列表里的 ✏️ 标记 |
+| 验证报「未匹配任何规则」 | 规则可能带 `user` 约束；工具会带上，手动测试要自己选身份 |
+| 按钮点了说「已过期」 | bot 重启过。按钮里的短 token 存在内存，重启即失效 |
+| `409 Conflict: terminated by other getUpdates` | 同一个 bot token 跑了两个实例 |
+
+面板升级后先跑 `-selftest`：单元测试挡不住面板版本改序列化，而那是生产环境第一个暴露的
+问题。
+
+### 已知的面板版本差异（v3.7.0 实测，代码已兼容）
+
+- `/xray/` 的 `obj` 是**双重编码**的 JSON 字符串，其他接口是普通对象
+- `/clients/links/:email` **不查 hosts 表**，地址从请求 Host 推导、端口用入站内部端口 ——
+  所以分享链接改用 `/clients/subLinks/:subId`（走订阅引擎，认 hosts 表）
+- geodata 条目是 `{total, items:[{kind,value}]}`，不是带前缀的字符串列表
+- `geosite:` / `geoip:` 不带文件名，而面板拒绝空文件名
+
+---
+
+## 安全
+
+`allowed_chat_ids` 之外的消息**直接丢弃、不回应**，空名单拒绝启动。**名单里每个人都有面板
+的完整控制权**，没有分级。
+
+配置文件里同时有面板 admin token 和 bot token，权限 `0640`。别和面板自带 tgbot 共用一个
+bot token —— 两个进程对同一 token 做 long polling 会互相抢 update。
+
+真正的单点是你的 Telegram 账号，建议开两步验证。
+
+---
+
+## 开发
+
+```bash
+go test ./...        # 单元测试
+./xui-remote -selftest   # 对着真面板跑所有读路径
+```
+
+加模块：实现 `bot.Module`，按需再实现 `Commander`（斜杠命令）、`TextMatcher`（裸文本候选
+动作）、`Prompter` / `PayloadPrompter`（追问），然后在 `main.go` 里 `bot.Register`。
 
 几条约定：
 
-- **回调数据是 `<模块名>:<动作>:<参数>`**，注册时重名直接 panic。Telegram 的
-  callback_data 上限 64 字节，长值用 `c.Stash` 换短 token；**token 必须带类别标记**，
-  否则查不到时会被误当成字面值。
-- **裸文本不被任何功能独占。** 发进来的内容列出候选动作让用户选，新功能只是往菜单里多加
-  一个按钮。
-- **每个画面都要有出口**：子画面用 `bot.Back` / `bot.BackTo`，模块首页用 `bot.Home()`。
-  常驻键盘不算出口 —— 它跳到模块顶层，不是你来的地方。
+- **回调数据是 `<模块名>:<动作>:<参数>`**，注册时重名直接 panic。上限 64 字节，长值用
+  `c.Stash` 换短 token，**token 必须带类别标记** —— 否则查不到时会被误当成字面值。
+- **裸文本不被任何功能独占。** 发进来的内容列出候选动作让用户选。
+- **每个画面都要有出口**：`bot.Back` / `bot.BackTo` 回上一层，`bot.Home()` 回主菜单。
+  常驻键盘不算出口，它跳到模块顶层而不是你来的地方。
 - **按钮文字要自我说明**：带上它是什么（`端口 80`、`协议 TCP`），当前值用 `•` 标出。裸
-  数字只在它本身就是标识时才用（客户端的邮箱可以直接当按钮，路由规则的序号不行）。
-- **不要静默降级。** 编辑失败吞掉、查不到当字面值、两个视图各说各话不吭声 —— 这三类都
-  在实际使用中变成了看起来像数据错乱的 bug。诚实报错比"让它看起来能用"重要。
+  数字只在它本身就是标识时用。
+- **不要静默降级。** 编辑失败吞掉、查不到当字面值、两个视图各说各话不吭声 —— 这三类都在
+  实际使用中变成了看起来像数据错乱的 bug。
+
+### 刻意没做
+
+**改入站端口 / 新建入站。** 前者要提交完整 inbound 对象，而 `list/slim` 会剥掉 settings、
+`model.Inbound` 的序列化与反序列化形状又不一致，往返有损坏入站的风险；后者几十个字段，在
+Telegram 上配不出来。面板 UI 做这两件事是安全的。
+
+**客户端增删改、告警推送、数据库备份。** 面板自带 tgbot 已覆盖，这个工具专注它做不了的
+配置面。
