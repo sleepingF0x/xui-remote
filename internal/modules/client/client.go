@@ -61,37 +61,66 @@ func (m *Module) MatchText(input string) []bot.TextOffer {
 	}
 	return []bot.TextOffer{{
 		Label:    "查看客户端",
-		Callback: bot.CallbackData("client", "view", strings.TrimSpace(input)),
+		Callback: bot.CallbackData("client", "view", inlineRef(strings.TrimSpace(input))),
 	}}
 }
 
 func (m *Module) Callback(c *bot.Context, action string, args []string) error {
+	email, ok := resolve(c, args)
+	if !ok {
+		return c.Replace("这个按钮已过期，请重新查找客户端。")
+	}
 	switch action {
 	case "view":
-		return m.view(c, m.resolve(c, args), true)
+		return m.view(c, email, true)
 	case "sub":
-		return m.subscription(c, m.resolve(c, args))
+		return m.subscription(c, email)
 	case "links":
-		return m.shareLinks(c, m.resolve(c, args))
+		return m.shareLinks(c, email)
 	case "qr":
-		return m.qr(c, m.resolve(c, args))
+		return m.qr(c, email)
 	case "traffic":
-		return m.traffic(c, m.resolve(c, args))
+		return m.traffic(c, email)
 	}
 	return nil
 }
 
-// resolve accepts an identifier either inline or via a stash token, since an
-// email can be longer than callback data allows.
-func (m *Module) resolve(c *bot.Context, args []string) string {
-	if len(args) == 0 {
-		return ""
+// An identifier reaches a callback either stashed — it can outgrow Telegram's
+// 64-byte limit — or inline, from the text dispatcher, which has no Context to
+// stash with. The kind is marked so a stash miss is a stale button rather than
+// the token itself being mistaken for the identifier.
+const (
+	refStashed = "s"
+	refInline  = "r"
+)
+
+func stashedRef(c *bot.Context, email string) string { return refStashed + ":" + c.Stash(email) }
+
+func inlineRef(email string) string { return refInline + ":" + email }
+
+// parseRef splits a reference into its kind and value without resolving it, so
+// the classification can be checked on its own.
+func parseRef(args []string) (kind, value string, ok bool) {
+	if len(args) < 2 {
+		return "", "", false
 	}
-	joined := strings.Join(args, ":")
-	if v, ok := c.Unstash(args[0]); ok && len(args) == 1 {
-		return v
+	kind = args[0]
+	if kind != refStashed && kind != refInline {
+		return "", "", false
 	}
-	return joined
+	// The value is rejoined: an address may itself contain a colon.
+	return kind, strings.Join(args[1:], ":"), true
+}
+
+func resolve(c *bot.Context, args []string) (string, bool) {
+	kind, value, ok := parseRef(args)
+	if !ok {
+		return "", false
+	}
+	if kind == refInline {
+		return value, value != ""
+	}
+	return c.Unstash(value)
 }
 
 func (m *Module) search(c *bot.Context, query string) error {
@@ -109,7 +138,7 @@ func (m *Module) search(c *bot.Context, query string) error {
 	var rows [][]telego.InlineKeyboardButton
 	for _, it := range page.Items {
 		rows = append(rows, bot.InlineRow(
-			bot.Button(statusMark(it)+" "+it.Email, c.CallbackData("view", c.Stash(it.Email)))))
+			bot.Button(statusMark(it)+" "+it.Email, c.CallbackData("view", stashedRef(c, it.Email)))))
 	}
 	rows = append(rows, bot.InlineRow(bot.Home()))
 	header := fmt.Sprintf("匹配到 <b>%d</b> 个（共 %d）：", len(page.Items), page.Filtered)
@@ -134,7 +163,7 @@ func (m *Module) view(c *bot.Context, email string, replace bool) error {
 		sb.WriteString("最后在线 " + humanMillis(t.LastOnline) + "\n")
 	}
 
-	token := c.Stash(email)
+	token := stashedRef(c, email)
 	kb := bot.Keyboard(
 		bot.InlineRow(
 			bot.Button("订阅链接", c.CallbackData("sub", token)),
@@ -242,7 +271,7 @@ func (m *Module) subURL(email string) (string, error) {
 // backToClient returns to the client's own screen rather than the search that
 // found it — the search text is not carried, and a dead end is worse.
 func backToClient(c *bot.Context, email string) *telego.InlineKeyboardMarkup {
-	return bot.Keyboard(bot.InlineRow(bot.Back(c, "view", c.Stash(email))))
+	return bot.Keyboard(bot.InlineRow(bot.Back(c, "view", stashedRef(c, email))))
 }
 
 func statusMark(it panel.ClientSlim) string {
