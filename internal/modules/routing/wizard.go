@@ -108,7 +108,58 @@ func (m *Module) askValue(c *bot.Context, args []string) error {
 	return c.Replace("<b>新增规则 3/3</b>\n\n" + hint)
 }
 
+func (m *Module) askPosition(c *bot.Context, args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	raw, ok := c.Unstash(args[0])
+	if !ok {
+		return c.Replace("这个按钮已过期，请重新开始。")
+	}
+	d, err := decodeDraft(raw)
+	if err != nil {
+		return err
+	}
+	rules, err := m.rules()
+	if err != nil {
+		return err
+	}
+	c.AwaitWith("position", d.encode())
+	return c.Replace(positionPrompt(rules, d))
+}
+
+// positionPrompt renders the current ordering with the infrastructure prefix
+// marked, then states the range the new rule may take.
+func positionPrompt(rules []xraycfg.Rule, d draft) string {
+	floor := xraycfg.SafeFloor(rules)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("<b>插到第几位？</b>\n\n新规则：%s → <b>%s</b>\n\n<b>当前规则</b>\n",
+		bot.Escape(strings.Join(d.Values, ", ")), bot.Escape(d.Target)))
+	for _, r := range rules {
+		mark := " "
+		if r.Index < floor {
+			mark = "🔒"
+		} else if r.IsCatchAll() {
+			mark = "⚠️"
+		}
+		sb.WriteString(fmt.Sprintf("%s %d. %s → <b>%s</b>\n",
+			mark, r.Index+1, bot.Escape(truncateText(r.Summary(), 46)), bot.Escape(r.Target())))
+	}
+	if floor > 0 {
+		sb.WriteString(fmt.Sprintf("\n🔒 前 %d 条是基础设施规则，顺序承重，不能插到它们中间。\n", floor))
+	}
+	sb.WriteString(fmt.Sprintf("\n发送一个序号 <b>%d</b> – <b>%d</b>（新规则占据该位置，原有规则顺延）：",
+		floor+1, len(rules)+1))
+	return sb.String()
+}
+
 func (m *Module) PromptWith(c *bot.Context, key, payload, text string) error {
+	if key == "position" {
+		return m.positionReply(c, payload, text)
+	}
+	if key == "moveto" {
+		return m.moveToReply(c, payload, text)
+	}
 	if key != "value" {
 		return nil
 	}
@@ -148,8 +199,119 @@ func (m *Module) PromptWith(c *bot.Context, key, payload, text string) error {
 			bot.Button(fmt.Sprintf("最前（第 %d 位）", floor+1), c.CallbackData("np", token, strconv.Itoa(floor))),
 			bot.Button("末尾", c.CallbackData("np", token, strconv.Itoa(len(rules)))),
 		),
+		bot.InlineRow(bot.Button("指定序号…", c.CallbackData("npick", token))),
 		bot.InlineRow(bot.Button("取消", "core:cancel")),
 	))
+}
+
+// positionReply validates a typed position and stages the rule, re-asking
+// rather than silently clamping so the operator sees why a choice was refused.
+func (m *Module) positionReply(c *bot.Context, payload, text string) error {
+	d, err := decodeDraft(payload)
+	if err != nil {
+		return err
+	}
+	rules, err := m.rules()
+	if err != nil {
+		return err
+	}
+	idx, err := validatePosition(rules, text)
+	if err != nil {
+		// Keep the prompt open so a typo does not drop the half-built rule.
+		c.AwaitWith("position", payload)
+		return err
+	}
+	return m.stage(c, d, idx)
+}
+
+// validatePosition turns a typed 1-based position into an index, refusing
+// anything inside the infrastructure prefix instead of quietly clamping it.
+// An insert may take the slot past the last rule; a move may not.
+func validatePosition(rules []xraycfg.Rule, text string) (int, error) {
+	return validatePositionIn(rules, text, true)
+}
+
+func validatePositionIn(rules []xraycfg.Rule, text string, insert bool) (int, error) {
+	floor := xraycfg.SafeFloor(rules)
+	hi := len(rules)
+	if insert {
+		hi++
+	}
+	lo := floor + 1
+
+	n, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil {
+		return 0, fmt.Errorf("%q 不是数字。发送 %d – %d 之间的序号", strings.TrimSpace(text), lo, hi)
+	}
+	if n < lo {
+		if floor > 0 && n >= 1 {
+			return 0, fmt.Errorf("第 %d 位在基础设施规则里，插进去会吃掉 api 入站的流量。请发送 %d – %d", n, lo, hi)
+		}
+		return 0, fmt.Errorf("序号从 %d 开始", lo)
+	}
+	if n > hi {
+		return 0, fmt.Errorf("只有 %d 条规则，最大可填 %d", len(rules), hi)
+	}
+	return n - 1, nil
+}
+
+func (m *Module) askMoveTo(c *bot.Context, idx int) error {
+	rules, err := m.rules()
+	if err != nil {
+		return err
+	}
+	if idx < 0 || idx >= len(rules) {
+		return fmt.Errorf("规则 %d 不存在", idx+1)
+	}
+	if floor := xraycfg.SafeFloor(rules); idx < floor {
+		return fmt.Errorf("第 %d 条是基础设施规则，它的位置不该动", idx+1)
+	}
+	c.AwaitWith("moveto", strconv.Itoa(idx))
+	return c.Replace(movePrompt(rules, idx))
+}
+
+func movePrompt(rules []xraycfg.Rule, from int) string {
+	floor := xraycfg.SafeFloor(rules)
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("<b>把第 %d 条移到哪里？</b>\n\n<b>当前规则</b>\n", from+1))
+	for _, r := range rules {
+		mark := " "
+		switch {
+		case r.Index == from:
+			mark = "👉"
+		case r.Index < floor:
+			mark = "🔒"
+		case r.IsCatchAll():
+			mark = "⚠️"
+		}
+		sb.WriteString(fmt.Sprintf("%s %d. %s → <b>%s</b>\n",
+			mark, r.Index+1, bot.Escape(truncateText(r.Summary(), 46)), bot.Escape(r.Target())))
+	}
+	if floor > 0 {
+		sb.WriteString(fmt.Sprintf("\n🔒 前 %d 条顺序承重，不能挪到它们中间。\n", floor))
+	}
+	sb.WriteString(fmt.Sprintf("\n发送目标序号 <b>%d</b> – <b>%d</b>：", floor+1, len(rules)))
+	return sb.String()
+}
+
+func (m *Module) moveToReply(c *bot.Context, payload, text string) error {
+	from, err := strconv.Atoi(payload)
+	if err != nil {
+		return fmt.Errorf("规则序号丢失，请重新选择")
+	}
+	rules, err := m.rules()
+	if err != nil {
+		return err
+	}
+	to, err := validatePositionIn(rules, text, false)
+	if err != nil {
+		c.AwaitWith("moveto", payload)
+		return err
+	}
+	if to == from {
+		return c.Send("位置没变。")
+	}
+	return m.move(c, from, to)
 }
 
 func (m *Module) stageNew(c *bot.Context, args []string) error {
@@ -168,7 +330,10 @@ func (m *Module) stageNew(c *bot.Context, args []string) error {
 	if err != nil {
 		return fmt.Errorf("位置 %q 不是数字", args[1])
 	}
+	return m.stage(c, d, pos)
+}
 
+func (m *Module) stage(c *bot.Context, d draft, pos int) error {
 	field := "domain"
 	if d.Kind == "ip" {
 		field = "ip"
@@ -246,4 +411,12 @@ func atoi(args []string, i int) int {
 		return -1
 	}
 	return n
+}
+
+func truncateText(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "…"
 }

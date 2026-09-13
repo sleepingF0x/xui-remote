@@ -43,6 +43,8 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 		return m.confirmDelete(c, atoi(args, 0))
 	case "delgo":
 		return m.deleteRule(c, atoi(args, 0))
+	case "moveto":
+		return m.askMoveTo(c, atoi(args, 0))
 	case "up":
 		return m.move(c, atoi(args, 0), atoi(args, 0)-1)
 	case "down":
@@ -53,6 +55,8 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 		return m.pickKind(c, args)
 	case "nk":
 		return m.askValue(c, args)
+	case "npick":
+		return m.askPosition(c, args)
 	case "np":
 		return m.stageNew(c, args)
 	}
@@ -134,8 +138,9 @@ func (m *Module) view(c *bot.Context, idx int) error {
 		bot.InlineRow(
 			bot.Button("↑ 上移", c.CallbackData("up", i)),
 			bot.Button("↓ 下移", c.CallbackData("down", i)),
-			bot.Button("删除", c.CallbackData("del", i)),
+			bot.Button("移到…", c.CallbackData("moveto", i)),
 		),
+		bot.InlineRow(bot.Button("删除", c.CallbackData("del", i))),
 		bot.InlineRow(bot.Button("← 返回列表", c.CallbackData("list"))),
 	)
 	return c.Replace(body, kb)

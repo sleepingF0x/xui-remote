@@ -1,6 +1,10 @@
 package routing
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/lichenhao/xui-remote/internal/xraycfg"
+)
 
 // A bare string in an Xray routing rule is a substring match, while the same
 // text in a geosite source file means a suffix match. Copying domains across
@@ -56,5 +60,98 @@ func TestNormalizeValuesSplitsOnEverySeparator(t *testing.T) {
 func TestNormalizeValuesDropsEmptyInput(t *testing.T) {
 	if got := normalizeValues("domain", "  \n , \t "); len(got) != 0 {
 		t.Fatalf("want no values, got %v", got)
+	}
+}
+
+func liveRules() []xraycfg.Rule {
+	mk := func(tag string, raw map[string]any) xraycfg.Rule {
+		raw["outboundTag"] = tag
+		return xraycfg.Rule{Raw: raw}
+	}
+	rules := []xraycfg.Rule{
+		mk("api", map[string]any{"inboundTag": []any{"api"}}),
+		mk("blocked", map[string]any{"ip": []any{"geoip:private"}}),
+		mk("blocked", map[string]any{"protocol": []any{"bittorrent"}}),
+		mk("us-vircs", map[string]any{"domain": []any{"domain:ip.sb"}}),
+		mk("tw-gcp", map[string]any{"domain": []any{"ext:custom.dat:CRYPTO"}}),
+	}
+	for i := range rules {
+		rules[i].Index = i
+	}
+	return rules
+}
+
+func TestValidatePositionAcceptsTheAllowedRange(t *testing.T) {
+	rules := liveRules()
+	tests := []struct {
+		input string
+		want  int
+	}{
+		{"4", 3},
+		{" 5 ", 4},
+		{"6", 5}, // append: one past the last rule
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got, err := validatePosition(rules, tt.input)
+			if err != nil {
+				t.Fatalf("validatePosition(%q): %v", tt.input, err)
+			}
+			if got != tt.want {
+				t.Fatalf("index = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+// Refusing beats clamping here: silently moving the rule elsewhere would leave
+// the operator believing it landed where they asked.
+func TestValidatePositionRefusesInfrastructurePrefixAndOutOfRange(t *testing.T) {
+	rules := liveRules()
+	for _, input := range []string{"1", "2", "3", "0", "-1", "7", "99", "abc", ""} {
+		t.Run(input, func(t *testing.T) {
+			if _, err := validatePosition(rules, input); err == nil {
+				t.Fatalf("validatePosition(%q) must be refused", input)
+			}
+		})
+	}
+}
+
+func TestValidatePositionAllowsTopWhenThereIsNoInfrastructurePrefix(t *testing.T) {
+	rules := []xraycfg.Rule{{Raw: map[string]any{"domain": []any{"geosite:cn"}, "outboundTag": "direct"}}}
+	got, err := validatePosition(rules, "1")
+	if err != nil {
+		t.Fatalf("validatePosition: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("index = %d, want 0", got)
+	}
+}
+
+// A move has no extra slot: the last valid target is the last existing rule,
+// while an insert may take the position one past it.
+func TestValidatePositionInDistinguishesInsertFromMove(t *testing.T) {
+	rules := liveRules() // 5 rules, infrastructure floor at index 3
+	if _, err := validatePositionIn(rules, "6", true); err != nil {
+		t.Fatalf("insert at 6 (append) must be allowed: %v", err)
+	}
+	if _, err := validatePositionIn(rules, "6", false); err == nil {
+		t.Fatal("move to 6 must be refused; there is no sixth rule")
+	}
+	got, err := validatePositionIn(rules, "5", false)
+	if err != nil {
+		t.Fatalf("move to 5: %v", err)
+	}
+	if got != 4 {
+		t.Fatalf("index = %d, want 4", got)
+	}
+}
+
+func TestValidatePositionInRefusesMovesIntoInfrastructurePrefix(t *testing.T) {
+	rules := liveRules()
+	for _, input := range []string{"1", "2", "3"} {
+		if _, err := validatePositionIn(rules, input, false); err == nil {
+			t.Fatalf("move to %s must be refused", input)
+		}
 	}
 }
