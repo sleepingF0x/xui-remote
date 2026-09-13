@@ -60,10 +60,39 @@ func (c *Context) Replace(text string, keyboard ...*telego.InlineKeyboardMarkup)
 		params.ReplyMarkup = keyboard[0]
 	}
 	_, err := c.bot.EditMessageText(c.ctx, params)
-	if err != nil && strings.Contains(err.Error(), "message is not modified") {
+	switch {
+	case err == nil:
 		return nil
+	case isUnmodified(err):
+		return nil
+	case isUneditable(err):
+		// A photo or an aged-out message cannot take edited text; the screen
+		// still has to appear, so post it instead of surfacing a 400.
+		return c.Send(text, keyboard...)
 	}
 	return err
+}
+
+// isUnmodified reports Telegram rejecting an edit that would change nothing.
+func isUnmodified(err error) bool {
+	return strings.Contains(err.Error(), "message is not modified")
+}
+
+// isUneditable reports an edit Telegram will never accept for this message,
+// as opposed to a transient failure worth surfacing.
+func isUneditable(err error) bool {
+	msg := err.Error()
+	for _, s := range []string{
+		"there is no text in the message to edit",
+		"message can't be edited",
+		"MESSAGE_ID_INVALID",
+		"message to edit not found",
+	} {
+		if strings.Contains(msg, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *Context) Errorf(format string, args ...any) error {
