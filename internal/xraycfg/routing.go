@@ -93,8 +93,10 @@ func (r Rule) Summary() string {
 
 // IsCatchAll reports whether the rule constrains nothing that narrows traffic,
 // so every rule after it is unreachable for the traffic class it covers.
+// inboundTag counts as narrowing: a rule scoped to one inbound never sees
+// traffic arriving on another, so it shadows nothing for the rest of them.
 func (r Rule) IsCatchAll() bool {
-	for _, key := range []string{"domain", "ip", "port", "source", "sourcePort", "protocol", "user", "attrs"} {
+	for _, key := range []string{"domain", "ip", "port", "source", "sourcePort", "protocol", "user", "attrs", "inboundTag"} {
 		if has(r.Raw[key]) {
 			return false
 		}

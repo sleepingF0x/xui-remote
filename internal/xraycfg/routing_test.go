@@ -86,7 +86,9 @@ func TestIsCatchAllOnlyForUnnarrowedRules(t *testing.T) {
 	}{
 		{"bare outbound", map[string]any{}, true},
 		{"network only", map[string]any{"network": "tcp,udp"}, true},
-		{"inboundTag only", map[string]any{"inboundTag": []any{"in-1"}}, true},
+		// The api inbound's rule is inboundTag-only; treating it as a catch-all
+		// made SuggestPosition push every new rule to the very top.
+		{"inboundTag only is scoped, not catch-all", map[string]any{"inboundTag": []any{"api"}}, false},
 		{"has domain", map[string]any{"domain": []any{"geosite:cn"}}, false},
 		{"has ip", map[string]any{"ip": []any{"geoip:cn"}}, false},
 		{"has port", map[string]any{"port": "443"}, false},
@@ -117,6 +119,21 @@ func TestSuggestPositionAppendsWhenNoCatchAll(t *testing.T) {
 	rules := []Rule{rule("a", map[string]any{"domain": []any{"x"}})}
 	if got := SuggestPosition(rules); got != 1 {
 		t.Fatalf("SuggestPosition() = %d, want 1", got)
+	}
+}
+
+// Shape taken from a live panel: infrastructure rules first, then specific
+// domain rules, no catch-all anywhere. A new rule belongs at the end.
+func TestSuggestPositionOnRuleSetWithoutCatchAll(t *testing.T) {
+	rules := []Rule{
+		rule("api", map[string]any{"inboundTag": []any{"api"}}),
+		rule("blocked", map[string]any{"ip": []any{"geoip:private"}}),
+		rule("blocked", map[string]any{"protocol": []any{"bittorrent"}}),
+		rule("direct", map[string]any{"domain": []any{"geosite:openai"}, "user": []any{"a@b"}}),
+		rule("tw-gcp", map[string]any{"domain": []any{"ext:custom.dat:CRYPTO"}}),
+	}
+	if got := SuggestPosition(rules); got != len(rules) {
+		t.Fatalf("SuggestPosition() = %d, want %d (append; nothing shadows)", got, len(rules))
 	}
 }
 
