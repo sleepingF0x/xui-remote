@@ -164,6 +164,9 @@ func (m *Module) PromptWith(c *bot.Context, key, payload, text string) error {
 	if key == "moveto" {
 		return m.moveToReply(c, payload, text)
 	}
+	if key == "valadd" {
+		return m.valueAddReply(c, payload, text)
+	}
 	if key == "select" {
 		return m.selectReply(c, text)
 	}

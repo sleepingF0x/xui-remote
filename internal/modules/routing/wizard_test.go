@@ -194,3 +194,47 @@ func TestMatchingFiltersOnWhatTheListShows(t *testing.T) {
 		})
 	}
 }
+
+func TestDedupeKeepsOnlyValuesTheRuleLacks(t *testing.T) {
+	tests := []struct {
+		name       string
+		existing   []string
+		candidates []string
+		want       []string
+	}{
+		{"all new", []string{"domain:a.com"}, []string{"domain:b.com"}, []string{"domain:b.com"}},
+		{"exact duplicate", []string{"domain:a.com"}, []string{"domain:a.com"}, nil},
+		// Routing tokens are matched case-insensitively by Xray, so re-adding
+		// one in different case would otherwise grow the list silently.
+		{"case duplicate", []string{"ext:custom.dat:CRYPTO"}, []string{"ext:custom.dat:crypto"}, nil},
+		{"duplicate within input", nil, []string{"domain:a.com", "domain:a.com"}, []string{"domain:a.com"}},
+		{"mixed", []string{"domain:a.com"}, []string{"domain:a.com", "domain:b.com"}, []string{"domain:b.com"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dedupe(tt.existing, tt.candidates)
+			if len(got) != len(tt.want) {
+				t.Fatalf("dedupe = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("dedupe = %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+func TestToAnyProducesTheShapeTheTemplateStores(t *testing.T) {
+	got := toAny([]string{"a", "b"})
+	if len(got) != 2 {
+		t.Fatalf("len = %d", len(got))
+	}
+	// The template is a map[string]any tree, so matchers must go back as []any
+	// or the next read cannot parse them.
+	for i, v := range got {
+		if _, ok := v.(string); !ok {
+			t.Fatalf("element %d is %T, want string", i, v)
+		}
+	}
+}
