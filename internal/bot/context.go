@@ -124,3 +124,13 @@ func splitMessage(text string) []string {
 	}
 	return out
 }
+
+// SendPhoto posts an in-memory image, used for QR codes.
+func (c *Context) SendPhoto(name string, data []byte, caption string) error {
+	params := tu.Photo(tu.ID(c.ChatID), tu.FileFromBytes(data, name))
+	if caption != "" {
+		params = params.WithCaption(caption).WithParseMode(telego.ModeHTML)
+	}
+	_, err := c.bot.SendPhoto(c.ctx, params)
+	return err
+}

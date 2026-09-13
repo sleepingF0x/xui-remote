@@ -12,7 +12,10 @@ import (
 
 	"github.com/lichenhao/xui-remote/internal/bot"
 	"github.com/lichenhao/xui-remote/internal/config"
+	"github.com/lichenhao/xui-remote/internal/modules/client"
 	"github.com/lichenhao/xui-remote/internal/modules/configtxn"
+	"github.com/lichenhao/xui-remote/internal/modules/inbound"
+	"github.com/lichenhao/xui-remote/internal/modules/outbound"
 	"github.com/lichenhao/xui-remote/internal/modules/routetest"
 	"github.com/lichenhao/xui-remote/internal/modules/routing"
 	"github.com/lichenhao/xui-remote/internal/modules/status"
@@ -31,7 +34,7 @@ func main() {
 		log.Fatalf("配置错误: %v", err)
 	}
 
-	client := panel.New(panel.Options{
+	api := panel.New(panel.Options{
 		BaseURL:     cfg.Panel.BaseURL,
 		Token:       cfg.Panel.APIToken,
 		PublicHost:  cfg.Panel.PublicHost,
@@ -39,7 +42,7 @@ func main() {
 		InsecureTLS: cfg.Panel.InsecureTLS,
 	})
 
-	st, err := client.Status()
+	st, err := api.Status()
 	if err != nil {
 		log.Fatalf("连接面板失败: %v", err)
 	}
@@ -52,7 +55,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("状态目录不可用: %v", err)
 	}
-	manager := txn.New(client, store)
+	manager := txn.New(api, store)
 
 	b, err := bot.New(cfg.Telegram.Token, cfg.Telegram.AllowedChatIDs)
 	if err != nil {
@@ -60,9 +63,12 @@ func main() {
 	}
 	b.Register(
 		routing.New(manager),
-		routetest.New(client),
+		outbound.New(api, manager),
+		inbound.New(api),
+		routetest.New(api),
 		configtxn.New(manager),
-		status.New(client),
+		client.New(api),
+		status.New(api),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
