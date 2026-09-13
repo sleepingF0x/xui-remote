@@ -74,7 +74,7 @@ func main() {
 		routing.New(manager),
 		outbound.New(api, manager),
 		inbound.New(api),
-		routetest.New(api),
+		routetest.New(api, manager),
 		configtxn.New(manager, verify.New(api)),
 		client.New(api),
 		status.New(api),

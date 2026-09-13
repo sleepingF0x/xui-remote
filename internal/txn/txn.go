@@ -101,6 +101,30 @@ func (m *Manager) Pending() (*state.Staging, error) {
 
 func (m *Manager) Discard() error { return m.store.ClearStaging() }
 
+// PendingCount is how many edits are staged, or zero when the draft and the
+// live config are the same thing.
+func (m *Manager) PendingCount() int {
+	st, err := m.store.LoadStaging()
+	if err != nil {
+		return 0
+	}
+	return len(st.Entries)
+}
+
+// BaseTemplate is the live config as it looked when staging opened, so a view
+// showing the draft can mark which parts of it are not live yet.
+func (m *Manager) BaseTemplate() (map[string]any, bool) {
+	st, err := m.store.LoadStaging()
+	if err != nil {
+		return nil, false
+	}
+	var tpl map[string]any
+	if err := json.Unmarshal(st.Base, &tpl); err != nil {
+		return nil, false
+	}
+	return tpl, true
+}
+
 type ApplyResult struct {
 	Snapshot *state.Snapshot
 	Applied  []state.StagedEntry

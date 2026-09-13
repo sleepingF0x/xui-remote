@@ -300,3 +300,21 @@ func TestBalancerTagsReadsRoutingBalancers(t *testing.T) {
 		t.Fatal("a template without routing must yield no balancers")
 	}
 }
+
+// The rule list renders the staged draft while route testing hits the running
+// core, so a view has to be able to tell which rules are not live yet.
+func TestRuleComparisonDetectsARetarget(t *testing.T) {
+	live := rule("direct", map[string]any{"domain": []any{"geosite:twitter"}, "user": []any{"admin"}})
+	same := rule("direct", map[string]any{"domain": []any{"geosite:twitter"}, "user": []any{"admin"}})
+	changed := rule("us-vircs", map[string]any{"domain": []any{"geosite:twitter"}, "user": []any{"admin"}})
+
+	if live.Target() != same.Target() {
+		t.Fatal("identical rules must compare equal by target")
+	}
+	if changed.Target() != "us-vircs" {
+		t.Fatalf("retargeted rule Target() = %q", changed.Target())
+	}
+	if live.Target() == changed.Target() {
+		t.Fatal("a retarget must be visible as a different target")
+	}
+}

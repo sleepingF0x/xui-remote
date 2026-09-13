@@ -12,6 +12,7 @@ import (
 	"github.com/lichenhao/xui-remote/internal/bot"
 	"github.com/lichenhao/xui-remote/internal/detect"
 	"github.com/lichenhao/xui-remote/internal/panel"
+	"github.com/lichenhao/xui-remote/internal/txn"
 	"github.com/lichenhao/xui-remote/internal/xraycfg"
 )
 
@@ -23,9 +24,10 @@ const (
 
 type Module struct {
 	panel *panel.Client
+	txn   *txn.Manager
 }
 
-func New(p *panel.Client) *Module { return &Module{panel: p} }
+func New(p *panel.Client, t *txn.Manager) *Module { return &Module{panel: p, txn: t} }
 
 func (m *Module) Name() string  { return "rtest" }
 func (m *Module) Title() string { return "🧪 路由测试" }
@@ -202,6 +204,12 @@ func (m *Module) run(c *bot.Context, p probe, replace bool) error {
 	if n := m.userScopedRules(); p.Email == "" && n > 0 {
 		sb.WriteString(fmt.Sprintf("\n\n⚠️ 有 <b>%d</b> 条规则限定了用户，不指定用户时它们永远匹配不上。", n))
 	}
+	// The probe hits the running core, so a staged edit is invisible here while
+	// the rule list already shows it — without saying so the two look broken.
+	if n := m.txn.PendingCount(); n > 0 {
+		sb.WriteString(fmt.Sprintf(
+			"\n\n✏️ 暂存区有 <b>%d</b> 项未提交，本次测试反映的是<b>线上</b>配置，不含那些改动。", n))
+	}
 
 	token := c.Stash(p.encode())
 	userLabel := "指定用户…"
@@ -215,6 +223,10 @@ func (m *Module) run(c *bot.Context, p probe, replace bool) error {
 			bot.Home(),
 		),
 	)
+	if m.txn.PendingCount() > 0 {
+		kb.InlineKeyboard = append(kb.InlineKeyboard,
+			bot.InlineRow(bot.Button("⚙️ 去提交暂存改动", "config:diff")))
+	}
 	if replace {
 		return c.Replace(sb.String(), kb)
 	}

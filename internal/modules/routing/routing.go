@@ -4,6 +4,7 @@ package routing
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -114,6 +115,8 @@ func (m *Module) render(c *bot.Context, page int, filter string, replace bool) e
 	start := page * pageSize
 	end := min(start+pageSize, len(shown))
 
+	pending := m.pendingRules(rules)
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("<b>🔀 路由规则</b> (%d)", len(rules)))
 	if filter != "" {
@@ -128,7 +131,12 @@ func (m *Module) render(c *bot.Context, page int, filter string, replace bool) e
 	}
 	floor := xraycfg.SafeFloor(rules)
 	for _, r := range shown[start:end] {
-		sb.WriteString(ruleLine(r, floor))
+		sb.WriteString(ruleLine(r, floor, pending[r.Index]))
+	}
+	if n := m.txn.PendingCount(); n > 0 {
+		sb.WriteString(fmt.Sprintf(
+			"\n✏️ <b>%d 项改动尚未提交</b>，标 ✏️ 的规则是草稿，还没生效。\n"+
+				"<i>路由测试打的是线上配置，这两处会对不上，直到提交。</i>\n", n))
 	}
 	if pages > 1 {
 		sb.WriteString(fmt.Sprintf("\n第 %d / %d 页\n", page+1, pages))
@@ -141,9 +149,11 @@ func (m *Module) render(c *bot.Context, page int, filter string, replace bool) e
 	return send(c, replace, sb.String(), m.listKeyboard(c, page, pages, filter))
 }
 
-func ruleLine(r xraycfg.Rule, floor int) string {
+func ruleLine(r xraycfg.Rule, floor int, draft bool) string {
 	marker := "  "
 	switch {
+	case draft:
+		marker = "✏️"
 	case r.Index < floor:
 		marker = "🔒"
 	case r.IsCatchAll():
@@ -155,6 +165,30 @@ func ruleLine(r xraycfg.Rule, floor int) string {
 		line += "      <i>catch-all，之后的规则不会生效</i>\n"
 	}
 	return line
+}
+
+// pendingRules marks the rules whose staged form differs from what is live, so
+// the list cannot be read as the running config when it is not.
+func (m *Module) pendingRules(draft []xraycfg.Rule) map[int]bool {
+	base, ok := m.txn.BaseTemplate()
+	if !ok {
+		return nil
+	}
+	liveRules, err := xraycfg.Rules(base)
+	if err != nil {
+		return nil
+	}
+	out := map[int]bool{}
+	for _, r := range draft {
+		if r.Index >= len(liveRules) || !sameRule(liveRules[r.Index], r) {
+			out[r.Index] = true
+		}
+	}
+	return out
+}
+
+func sameRule(a, b xraycfg.Rule) bool {
+	return reflect.DeepEqual(a.Raw, b.Raw)
 }
 
 // matching filters on the rendered summary and target, which is what the user
