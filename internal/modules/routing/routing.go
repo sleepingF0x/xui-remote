@@ -10,9 +10,9 @@ import (
 
 	"github.com/mymmrac/telego"
 
-	"github.com/lichenhao/xui-remote/internal/bot"
-	"github.com/lichenhao/xui-remote/internal/txn"
-	"github.com/lichenhao/xui-remote/internal/xraycfg"
+	"github.com/sleepingF0x/xui-remote/internal/bot"
+	"github.com/sleepingF0x/xui-remote/internal/txn"
+	"github.com/sleepingF0x/xui-remote/internal/xraycfg"
 )
 
 type Module struct {

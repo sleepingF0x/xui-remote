@@ -24,7 +24,14 @@
 ## 快速开始
 
 ```bash
-go build -o xui-remote .
+go install github.com/sleepingF0x/xui-remote@latest
+# 或者从源码构建
+git clone https://github.com/sleepingF0x/xui-remote && cd xui-remote && go build .
+```
+
+复制一份配置：
+
+```bash
 cp config.example.yaml config.yaml
 ```
 

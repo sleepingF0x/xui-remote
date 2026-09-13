@@ -12,9 +12,9 @@ import (
 	"github.com/mymmrac/telego"
 	qrcode "github.com/skip2/go-qrcode"
 
-	"github.com/lichenhao/xui-remote/internal/bot"
-	"github.com/lichenhao/xui-remote/internal/detect"
-	"github.com/lichenhao/xui-remote/internal/panel"
+	"github.com/sleepingF0x/xui-remote/internal/bot"
+	"github.com/sleepingF0x/xui-remote/internal/detect"
+	"github.com/sleepingF0x/xui-remote/internal/panel"
 )
 
 // clientsPerPage keeps the button column readable; the panel pages server-side

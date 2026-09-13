@@ -9,8 +9,8 @@ import (
 	"net"
 	"strings"
 
-	"github.com/lichenhao/xui-remote/internal/panel"
-	"github.com/lichenhao/xui-remote/internal/state"
+	"github.com/sleepingF0x/xui-remote/internal/panel"
+	"github.com/sleepingF0x/xui-remote/internal/state"
 )
 
 // entrySampleSize bounds the category page fetched to find a testable member;

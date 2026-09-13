@@ -9,10 +9,10 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/lichenhao/xui-remote/internal/panel"
-	"github.com/lichenhao/xui-remote/internal/state"
-	"github.com/lichenhao/xui-remote/internal/verify"
-	"github.com/lichenhao/xui-remote/internal/xraycfg"
+	"github.com/sleepingF0x/xui-remote/internal/panel"
+	"github.com/sleepingF0x/xui-remote/internal/state"
+	"github.com/sleepingF0x/xui-remote/internal/verify"
+	"github.com/sleepingF0x/xui-remote/internal/xraycfg"
 )
 
 // secretish masks anything that looks like a credential inside a share link,

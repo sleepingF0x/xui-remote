@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lichenhao/xui-remote/internal/panel"
+	"github.com/sleepingF0x/xui-remote/internal/panel"
 )
 
 // A stash token is eight hex characters, which is also a plausible client

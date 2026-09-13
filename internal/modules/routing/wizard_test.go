@@ -3,7 +3,7 @@ package routing
 import (
 	"testing"
 
-	"github.com/lichenhao/xui-remote/internal/xraycfg"
+	"github.com/sleepingF0x/xui-remote/internal/xraycfg"
 )
 
 // A bare string in an Xray routing rule is a substring match, while the same

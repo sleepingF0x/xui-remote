@@ -7,9 +7,9 @@ import (
 
 	"github.com/mymmrac/telego"
 
-	"github.com/lichenhao/xui-remote/internal/bot"
-	"github.com/lichenhao/xui-remote/internal/state"
-	"github.com/lichenhao/xui-remote/internal/xraycfg"
+	"github.com/sleepingF0x/xui-remote/internal/bot"
+	"github.com/sleepingF0x/xui-remote/internal/state"
+	"github.com/sleepingF0x/xui-remote/internal/xraycfg"
 )
 
 // values renders a rule's matchers with one removal button each. Every edit is

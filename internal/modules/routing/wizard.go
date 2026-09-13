@@ -9,9 +9,9 @@ import (
 
 	"github.com/mymmrac/telego"
 
-	"github.com/lichenhao/xui-remote/internal/bot"
-	"github.com/lichenhao/xui-remote/internal/state"
-	"github.com/lichenhao/xui-remote/internal/xraycfg"
+	"github.com/sleepingF0x/xui-remote/internal/bot"
+	"github.com/sleepingF0x/xui-remote/internal/state"
+	"github.com/sleepingF0x/xui-remote/internal/xraycfg"
 )
 
 // draft is the wizard's partial rule, carried between steps as a stashed token
