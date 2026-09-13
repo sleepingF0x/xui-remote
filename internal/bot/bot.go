@@ -148,11 +148,24 @@ func (b *Bot) onMessage(ctx context.Context, msg telego.Message) {
 		return
 	}
 
-	if strings.HasPrefix(text, "/") {
+	menuModule, isTitle := b.byTitle[text]
+	switch classifyMessage(text, isTitle, b.hasPrompt(chatID)) {
+	case kindCommand:
 		b.clearPrompt(chatID)
 		b.handleCommand(ctx, chatID, text)
 		return
+	case kindMenu:
+		b.clearPrompt(chatID)
+		c := b.context(ctx, chatID, 0, menuModule.Name())
+		if err := menuModule.Menu(c); err != nil {
+			_ = c.Errorf("%v", err)
+		}
+		return
+	case kindOffer:
+		b.offerActions(ctx, chatID, text)
+		return
 	}
+
 	if prompt, ok := b.takePrompt(chatID); ok {
 		if m, found := b.byName[prompt.Module]; found {
 			c := b.context(ctx, chatID, 0, m.Name())
@@ -170,14 +183,33 @@ func (b *Bot) onMessage(ctx context.Context, msg telego.Message) {
 			}
 		}
 	}
-	if m, ok := b.byTitle[text]; ok {
-		c := b.context(ctx, chatID, 0, m.Name())
-		if err := m.Menu(c); err != nil {
-			_ = c.Errorf("%v", err)
-		}
-		return
-	}
 	b.offerActions(ctx, chatID, text)
+}
+
+type messageKind int
+
+const (
+	kindCommand messageKind = iota
+	kindMenu
+	kindPrompt
+	kindOffer
+)
+
+// classifyMessage decides what a plain message means. Navigation — a command or
+// a persistent-keyboard button — outranks a pending question: those are always
+// "take me elsewhere", and answering a prompt with one strands the user inside
+// a step they were trying to leave.
+func classifyMessage(text string, isKeyboardTitle, hasPrompt bool) messageKind {
+	switch {
+	case strings.HasPrefix(text, "/"):
+		return kindCommand
+	case isKeyboardTitle:
+		return kindMenu
+	case hasPrompt:
+		return kindPrompt
+	default:
+		return kindOffer
+	}
 }
 
 // offerActions is the bare-text dispatcher: it never executes anything, it
@@ -234,6 +266,9 @@ func (b *Bot) onCallback(ctx context.Context, q telego.CallbackQuery) {
 	}
 	// Answering clears the client-side spinner even when the work takes a while.
 	_ = b.api.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
+	// Tapping any button abandons a typed question — otherwise cancelling out of
+	// a step leaves the prompt armed to eat the next unrelated message.
+	b.clearPrompt(chatID)
 
 	parts := strings.Split(q.Data, ":")
 	if len(parts) < 2 {
@@ -282,6 +317,13 @@ func (b *Bot) takePrompt(chatID int64) (pendingPrompt, bool) {
 	p, ok := b.prompts[chatID]
 	delete(b.prompts, chatID)
 	return p, ok
+}
+
+func (b *Bot) hasPrompt(chatID int64) bool {
+	b.promptsMu.Lock()
+	defer b.promptsMu.Unlock()
+	_, ok := b.prompts[chatID]
+	return ok
 }
 
 func (b *Bot) clearPrompt(chatID int64) {
