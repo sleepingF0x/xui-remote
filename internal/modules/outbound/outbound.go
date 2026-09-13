@@ -119,11 +119,14 @@ func (m *Module) overview(c *bot.Context, replace bool) error {
 	if len(row) > 0 {
 		rows = append(rows, row)
 	}
+	actions := []telego.InlineKeyboardButton{bot.Button("🩺 健康检查", c.CallbackData("health"))}
+	// The override pins a balancer to one outbound; with none defined the
+	// control can only ever report that there is nothing to pin.
+	if len(xraycfg.BalancerTags(tpl)) > 0 {
+		actions = append(actions, bot.Button("⚖️ 负载均衡", c.CallbackData("bal")))
+	}
 	rows = append(rows,
-		bot.InlineRow(
-			bot.Button("🩺 健康检查", c.CallbackData("health")),
-			bot.Button("⚖️ 负载均衡", c.CallbackData("bal")),
-		),
+		actions,
 		bot.InlineRow(
 			bot.Button("📥 订阅管理", c.CallbackData("subs")),
 			bot.Home(),
