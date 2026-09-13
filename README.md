@@ -2,20 +2,21 @@
 
 在 Telegram 上改 3x-ui 的路由 —— 并且知道改完之后规则**真的生效了**。
 
+<img src="docs/screenshots/status-and-menu.png" width="380" alt="常驻键盘与运行状态">
+
+改动先进暂存区，一批只重启一次 Xray。提交后自动验证规则是否真的生效：
+
 ```
-你:  🔀 路由 → 14 → 改出站 → hk-dmit
-bot: ✅ 已暂存：规则 14 出站 tw-gcp → hk-dmit
-     还未生效，到「⚙️ 配置」提交。
+⚙️ 配置 → 提交
 
-你:  ⚙️ 配置 → 提交
-bot: ✅ 已提交，Xray 已重启
-     ⚠️ 验证 0/1 通过
+✅ 已提交，Xray 已重启
+⚠️ 验证 0/1 通过
 
-     ❌ ext:custom.dat:CRYPTO-HK
-         取样 bluefin.io → tw-gcp，期望 hk-dmit
-         可能被第 15 条规则遮蔽
+❌ ext:custom.dat:CRYPTO-HK
+    取样 bluefin.io → tw-gcp，期望 hk-dmit
+    可能被第 15 条规则遮蔽
 
-     [调整第 14 条的位置] [回滚这次改动]
+[调整第 14 条的位置] [回滚这次改动]
 ```
 
 ---
