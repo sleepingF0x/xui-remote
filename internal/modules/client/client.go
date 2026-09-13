@@ -158,7 +158,11 @@ func (m *Module) subscription(c *bot.Context, email string) error {
 }
 
 func (m *Module) shareLinks(c *bot.Context, email string) error {
-	links, err := m.panel.ClientLinks(email)
+	subID, err := m.subID(email)
+	if err != nil {
+		return err
+	}
+	links, err := m.panel.SubLinks(subID)
 	if err != nil {
 		return fmt.Errorf("读取链接失败: %w", err)
 	}
@@ -197,20 +201,26 @@ func (m *Module) traffic(c *bot.Context, email string) error {
 // subURL joins the panel's configured subscription base with the client's
 // subId. The base comes from the panel so a reverse-proxied setup renders the
 // same URL the panel's own pages do.
-func (m *Module) subURL(email string) (string, error) {
+func (m *Module) subID(email string) (string, error) {
 	page, err := m.panel.SearchClients(email, 1, 5)
 	if err != nil {
 		return "", fmt.Errorf("读取客户端失败: %w", err)
 	}
-	var subID string
 	for _, it := range page.Items {
 		if it.Email == email {
-			subID = it.SubID
-			break
+			if it.SubID == "" {
+				return "", fmt.Errorf("客户端 %s 没有 subId", email)
+			}
+			return it.SubID, nil
 		}
 	}
-	if subID == "" {
-		return "", fmt.Errorf("客户端 %s 没有 subId", email)
+	return "", fmt.Errorf("找不到客户端 %s", email)
+}
+
+func (m *Module) subURL(email string) (string, error) {
+	subID, err := m.subID(email)
+	if err != nil {
+		return "", err
 	}
 	settings, err := m.panel.PanelSettings()
 	if err != nil {

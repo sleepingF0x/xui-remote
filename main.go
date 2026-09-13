@@ -20,6 +20,7 @@ import (
 	"github.com/lichenhao/xui-remote/internal/modules/routing"
 	"github.com/lichenhao/xui-remote/internal/modules/status"
 	"github.com/lichenhao/xui-remote/internal/panel"
+	"github.com/lichenhao/xui-remote/internal/selftest"
 	"github.com/lichenhao/xui-remote/internal/state"
 	"github.com/lichenhao/xui-remote/internal/txn"
 	"github.com/lichenhao/xui-remote/internal/verify"
@@ -28,6 +29,7 @@ import (
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the YAML config file")
 	checkOnly := flag.Bool("check", false, "verify panel connectivity and exit")
+	selfTest := flag.Bool("selftest", false, "exercise every read path against the panel and exit")
 	flag.Parse()
 
 	cfg, err := config.Load(*configPath)
@@ -49,6 +51,12 @@ func main() {
 	}
 	log.Printf("已连接面板 v%s，Xray %s %s", st.PanelVersion, st.Xray.Version, st.Xray.State)
 	if *checkOnly {
+		return
+	}
+	if *selfTest {
+		if err := selftest.New(api, os.Stdout).Run(); err != nil {
+			log.Fatal(err)
+		}
 		return
 	}
 

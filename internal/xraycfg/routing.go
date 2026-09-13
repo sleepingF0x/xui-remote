@@ -3,6 +3,7 @@
 package xraycfg
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -242,4 +243,14 @@ func joinPreview(items []string, max int) string {
 		return strings.Join(items, ", ")
 	}
 	return fmt.Sprintf("%s … +%d", strings.Join(items[:max], ", "), len(items)-max)
+}
+
+// ParseTemplate decodes the config template into the map form every edit
+// helper here operates on.
+func ParseTemplate(raw []byte) (map[string]any, error) {
+	var tpl map[string]any
+	if err := json.Unmarshal(raw, &tpl); err != nil {
+		return nil, fmt.Errorf("配置模板不是合法 JSON 对象: %w", err)
+	}
+	return tpl, nil
 }

@@ -15,24 +15,24 @@ import (
 func TestTestableEntryPicksProbeableMembers(t *testing.T) {
 	tests := []struct {
 		name  string
-		entry string
+		entry panel.GeoEntry
 		isIP  bool
 		want  string
 	}{
-		{"plain domain", "example.com", false, "example.com"},
-		{"domain prefix stripped", "domain:example.com", false, "example.com"},
-		{"full prefix stripped", "full:a.example.com", false, "a.example.com"},
-		{"keyword unusable", "keyword:ads", false, ""},
-		{"regexp unusable", `regexp:^ads?\.`, false, ""},
-		{"plain ip", "1.1.1.1", true, "1.1.1.1"},
+		{"suffix domain", panel.GeoEntry{Kind: "domain", Value: "example.com"}, false, "example.com"},
+		{"exact domain", panel.GeoEntry{Kind: "full", Value: "a.example.com"}, false, "a.example.com"},
+		{"keyword unusable", panel.GeoEntry{Kind: "keyword", Value: "ads"}, false, ""},
+		{"regexp unusable", panel.GeoEntry{Kind: "regexp", Value: `^ads?\.`}, false, ""},
+		{"plain ip", panel.GeoEntry{Kind: "cidr", Value: "1.1.1.1"}, true, "1.1.1.1"},
 		// A CIDR's network address is inside the range, so it is a valid probe.
-		{"cidr uses network address", "10.0.0.0/8", true, "10.0.0.0"},
-		{"domain is not an ip probe", "example.com", true, ""},
+		{"cidr uses network address", panel.GeoEntry{Kind: "cidr", Value: "10.0.0.0/8"}, true, "10.0.0.0"},
+		{"domain is not an ip probe", panel.GeoEntry{Kind: "domain", Value: "example.com"}, true, ""},
+		{"empty value", panel.GeoEntry{Kind: "domain", Value: ""}, false, ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := testableEntry(tt.entry, tt.isIP); got != tt.want {
-				t.Fatalf("testableEntry(%q, %v) = %q, want %q", tt.entry, tt.isIP, got, tt.want)
+				t.Fatalf("testableEntry(%+v, %v) = %q, want %q", tt.entry, tt.isIP, got, tt.want)
 			}
 		})
 	}
@@ -82,7 +82,7 @@ func TestResolveLiteralsWithoutTouchingThePanel(t *testing.T) {
 }
 
 // fakePanel serves the two endpoints a verification round needs.
-func fakePanel(t *testing.T, entries []string, outboundFor map[string]string) *panel.Client {
+func fakePanel(t *testing.T, entries []panel.GeoEntry, outboundFor map[string]string) *panel.Client {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		write := func(obj string) {
@@ -91,8 +91,14 @@ func fakePanel(t *testing.T, entries []string, outboundFor map[string]string) *p
 		}
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/geodata/entries"):
+			if r.URL.Query().Get("file") == "" {
+				// The panel rejects an empty file name outright.
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"success":false,"msg":"invalid geodata file name"}`))
+				return
+			}
 			raw, _ := json.Marshal(entries)
-			write(`{"total":` + itoa(len(entries)) + `,"entries":` + string(raw) + `}`)
+			write(`{"total":` + itoa(len(entries)) + `,"items":` + string(raw) + `}`)
 		case strings.HasSuffix(r.URL.Path, "/routeTest"):
 			_ = r.ParseForm()
 			tag, ok := outboundFor[r.PostForm.Get("domain")+r.PostForm.Get("ip")]
@@ -140,9 +146,27 @@ func TestRunReportsAShadowedRuleAsFailed(t *testing.T) {
 	}
 }
 
+// A geosite: token carries no file name, and the panel refuses an empty one —
+// the default database has to be filled in.
+func TestRunNamesTheDefaultDatabaseForABarePrefix(t *testing.T) {
+	entries := []panel.GeoEntry{{Kind: "domain", Value: "sampled.example"}}
+	v := New(fakePanel(t, entries, map[string]string{"sampled.example": "direct"}))
+	got := v.Run([]state.Check{{Kind: "domain", Value: "geosite:anthropic", Expect: "direct"}})
+	if !got[0].Verified() {
+		t.Fatalf("geosite: lookup must name geosite.dat, got skip %q", got[0].Skipped)
+	}
+	if !got[0].OK {
+		t.Fatalf("result = %+v", got[0])
+	}
+}
+
 func TestRunSamplesACategoryMemberToProbe(t *testing.T) {
 	// The first two members are unusable, so resolution must keep looking.
-	entries := []string{"keyword:ads", `regexp:^x\.`, "sampled.example"}
+	entries := []panel.GeoEntry{
+		{Kind: "keyword", Value: "ads"},
+		{Kind: "regexp", Value: `^x\.`},
+		{Kind: "domain", Value: "sampled.example"},
+	}
 	v := New(fakePanel(t, entries, map[string]string{"sampled.example": "hk-dmit"}))
 	got := v.Run([]state.Check{{Kind: "domain", Value: "ext:custom.dat:CRYPTO-HK", Expect: "hk-dmit"}})
 	if !got[0].Verified() {
@@ -157,7 +181,7 @@ func TestRunSamplesACategoryMemberToProbe(t *testing.T) {
 }
 
 func TestRunSkipsACategoryWithNothingProbeable(t *testing.T) {
-	v := New(fakePanel(t, []string{"keyword:ads", "regexp:^x."}, nil))
+	v := New(fakePanel(t, []panel.GeoEntry{{Kind: "keyword", Value: "ads"}, {Kind: "regexp", Value: "^x."}}, nil))
 	got := v.Run([]state.Check{{Kind: "domain", Value: "geosite:onlykeywords", Expect: "x"}})
 	if got[0].Verified() {
 		t.Fatal("a category with no probeable member must be skipped, not failed")

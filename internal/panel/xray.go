@@ -121,9 +121,16 @@ func (c *Client) OverrideBalancer(tag, target string) error {
 	return err
 }
 
+// GeoEntry carries its own match kind ("domain", "full", "keyword",
+// "regexp", …), so callers never have to re-parse a prefix out of the value.
+type GeoEntry struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
+}
+
 type GeoEntryPage struct {
-	Total   int      `json:"total"`
-	Entries []string `json:"entries"`
+	Total int        `json:"total"`
+	Items []GeoEntry `json:"items"`
 }
 
 // GeodataEntries lists a category's domains or CIDRs; query filters by substring.

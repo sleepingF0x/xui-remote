@@ -17,6 +17,13 @@ import (
 // the first entries are enough and a whole category can be enormous.
 const entrySampleSize = 25
 
+// The panel rejects an empty geodata file name, so a geosite:/geoip: token has
+// to name the database its prefix implies.
+const (
+	defaultSiteFile = "geosite.dat"
+	defaultIPFile   = "geoip.dat"
+)
+
 type Verifier struct {
 	panel *panel.Client
 }
@@ -91,9 +98,9 @@ func (v *Verifier) resolve(ch state.Check) (string, string) {
 	case strings.HasPrefix(lower, "regexp:"):
 		return "", "正则匹配无法取样验证"
 	case strings.HasPrefix(lower, "geosite:"):
-		return v.sampleCategory("", value[len("geosite:"):], false)
+		return v.sampleCategory(defaultSiteFile, value[len("geosite:"):], false)
 	case strings.HasPrefix(lower, "geoip:"):
-		return v.sampleCategory("", value[len("geoip:"):], true)
+		return v.sampleCategory(defaultIPFile, value[len("geoip:"):], true)
 	case strings.HasPrefix(lower, "ext:"):
 		file, code, ok := splitExt(value)
 		if !ok {
@@ -120,10 +127,10 @@ func (v *Verifier) sampleCategory(file, code string, isIP bool) (string, string)
 	if err != nil {
 		return "", fmt.Sprintf("读取分类 %s 失败: %v", code, err)
 	}
-	if page == nil || len(page.Entries) == 0 {
+	if page == nil || len(page.Items) == 0 {
 		return "", fmt.Sprintf("分类 %s 是空的或不存在", code)
 	}
-	for _, e := range page.Entries {
+	for _, e := range page.Items {
 		if target := testableEntry(e, isIP); target != "" {
 			return target, ""
 		}
@@ -131,16 +138,17 @@ func (v *Verifier) sampleCategory(file, code string, isIP bool) (string, string)
 	return "", fmt.Sprintf("分类 %s 里没有可直接取样的条目", code)
 }
 
-// testableEntry picks a member routeTest can be called with: a plain or full
-// domain, or a concrete address. Keyword and regexp members are not usable.
-func testableEntry(entry string, isIP bool) string {
-	e := strings.TrimSpace(entry)
-	lower := strings.ToLower(e)
-	switch {
-	case strings.HasPrefix(lower, "keyword:"), strings.HasPrefix(lower, "regexp:"):
+// testableEntry picks a member routeTest can be called with: a suffix or exact
+// domain, or a concrete address. Keyword and regexp members describe a pattern,
+// not a destination, so no probe can be constructed from them.
+func testableEntry(entry panel.GeoEntry, isIP bool) string {
+	switch strings.ToLower(entry.Kind) {
+	case "keyword", "regexp":
 		return ""
-	case strings.HasPrefix(lower, "domain:"), strings.HasPrefix(lower, "full:"):
-		e = e[strings.Index(e, ":")+1:]
+	}
+	e := strings.TrimSpace(entry.Value)
+	if e == "" {
+		return ""
 	}
 	if !isIP {
 		return e

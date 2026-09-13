@@ -42,8 +42,18 @@ Xray，所以每改一处就提交会反复断连。所有编辑进暂存区，`
 go build -o xui-remote .
 cp config.example.yaml config.yaml   # 填 token
 ./xui-remote -check                  # 只验证面板连通性
+./xui-remote -selftest               # 跑一遍所有读路径（见下）
 ./xui-remote
 ```
+
+## 自检
+
+`-selftest` 用真配置把每条读路径跑一遍：读配置模板并解析规则与出站、routeTest、
+分类取样、订阅链接，最后检查生成的链接**没有指向客户端到不了的地址**（loopback、
+tailnet、私有网段）。只读，不写任何东西。
+
+单元测试挡不住面板版本改序列化 —— 这恰恰是生产环境第一个暴露的问题。部署到新面板、
+或面板升级之后，先跑这个。
 
 部署到服务器：
 

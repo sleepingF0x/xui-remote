@@ -69,21 +69,11 @@ func (c *Client) ClientTraffic(email string) (*ClientTraffic, error) {
 	return &t, nil
 }
 
-// ClientLinks returns the client's individual share links, one per inbound.
-func (c *Client) ClientLinks(email string) ([]string, error) {
-	obj, err := c.Get("clients/links/"+url.PathEscape(email), nil)
-	if err != nil {
-		return nil, err
-	}
-	var links []string
-	if err := decodeObj(obj, &links); err != nil {
-		return nil, err
-	}
-	return links, nil
-}
-
-// SubLinks returns the links a subscription id resolves to. The subscription
-// URL itself is built by the panel's settings, not by this call.
+// SubLinks returns the links a subscription id resolves to, rendered through
+// the subscription engine — which applies the inbound's configured host entries
+// and ignores the request Host. /clients/links/:email is deliberately not used:
+// on 3.7.0 it derives the address from the request instead, so it hands out the
+// inbound's internal port and whatever interface the caller dialled.
 func (c *Client) SubLinks(subID string) ([]string, error) {
 	obj, err := c.Get("clients/subLinks/"+url.PathEscape(subID), nil)
 	if err != nil {
