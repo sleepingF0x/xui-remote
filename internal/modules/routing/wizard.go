@@ -162,6 +162,15 @@ func (m *Module) PromptWith(c *bot.Context, key, payload, text string) error {
 	if key == "moveto" {
 		return m.moveToReply(c, payload, text)
 	}
+	if key == "select" {
+		return m.selectReply(c, text)
+	}
+	if key == "filter" {
+		if strings.TrimSpace(text) == "-" {
+			return m.render(c, 0, "", false)
+		}
+		return m.render(c, 0, strings.TrimSpace(text), false)
+	}
 	if key != "value" {
 		return nil
 	}
@@ -255,6 +264,22 @@ func validatePositionIn(rules []xraycfg.Rule, text string, insert bool) (int, er
 		return 0, fmt.Errorf("只有 %d 条规则，最大可填 %d", len(rules), hi)
 	}
 	return n - 1, nil
+}
+
+// selectReply turns a number typed at the rule list into a detail view. Text
+// that is not a number re-offers the list rather than erroring, since the list
+// leaves the prompt armed and a stray message should not look like a failure.
+func (m *Module) selectReply(c *bot.Context, text string) error {
+	rules, err := m.rules()
+	if err != nil {
+		return err
+	}
+	n, convErr := strconv.Atoi(strings.TrimSpace(text))
+	if convErr != nil || n < 1 || n > len(rules) {
+		c.Await("select")
+		return fmt.Errorf("发送 1 – %d 之间的序号来选中规则", len(rules))
+	}
+	return m.view(c, n-1)
 }
 
 func (m *Module) askMoveTo(c *bot.Context, idx int) error {

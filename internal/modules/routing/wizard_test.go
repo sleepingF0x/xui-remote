@@ -155,3 +155,42 @@ func TestValidatePositionInRefusesMovesIntoInfrastructurePrefix(t *testing.T) {
 		}
 	}
 }
+
+func TestMatchingFiltersOnWhatTheListShows(t *testing.T) {
+	mk := func(i int, tag string, raw map[string]any) xraycfg.Rule {
+		raw["outboundTag"] = tag
+		return xraycfg.Rule{Index: i, Raw: raw}
+	}
+	rules := []xraycfg.Rule{
+		mk(0, "api", map[string]any{"inboundTag": []any{"api"}}),
+		mk(1, "us-vircs", map[string]any{"domain": []any{"ext:custom.dat:BANK-US"}}),
+		mk(2, "hk-dmit", map[string]any{"domain": []any{"ext:custom.dat:CRYPTO-HK"}}),
+		mk(3, "tw-gcp", map[string]any{"domain": []any{"geosite:category-cryptocurrency"}}),
+	}
+	tests := []struct {
+		name    string
+		filter  string
+		wantIdx []int
+	}{
+		{"empty keeps everything", "", []int{0, 1, 2, 3}},
+		{"by outbound tag", "hk-dmit", []int{2}},
+		{"by domain fragment", "crypto", []int{2, 3}},
+		{"case insensitive", "CRYPTO", []int{2, 3}},
+		{"no match", "netflix", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := matching(rules, tt.filter)
+			if len(got) != len(tt.wantIdx) {
+				t.Fatalf("matched %d rules, want %d", len(got), len(tt.wantIdx))
+			}
+			for i, r := range got {
+				// Filtered rules must keep their real position: the number the
+				// user types is the rule's index, not its place in the results.
+				if r.Index != tt.wantIdx[i] {
+					t.Fatalf("result %d has Index %d, want %d", i, r.Index, tt.wantIdx[i])
+				}
+			}
+		})
+	}
+}

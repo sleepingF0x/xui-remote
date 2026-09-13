@@ -36,7 +36,10 @@ func (m *Module) Menu(c *bot.Context) error { return m.list(c, false) }
 func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 	switch action {
 	case "list":
-		return m.list(c, true)
+		return m.listPage(c, args, true)
+	case "filter":
+		c.Await("filter")
+		return c.Replace("发送出站名或域名片段筛选，发送 <code>-</code> 清除筛选：")
 	case "view":
 		return m.view(c, atoi(args, 0))
 	case "del":
@@ -67,7 +70,30 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 	return nil
 }
 
+// pageSize keeps one screenful readable; a per-rule button grid was dropped
+// because the number in it carries no information — you have to read the list,
+// find the line, then hunt the same number in the grid.
+const pageSize = 12
+
 func (m *Module) list(c *bot.Context, replace bool) error {
+	return m.render(c, 0, "", replace)
+}
+
+func (m *Module) listPage(c *bot.Context, args []string, replace bool) error {
+	page := 0
+	if len(args) > 0 {
+		page = atoi(args, 0)
+	}
+	filter := ""
+	if len(args) > 1 {
+		if v, ok := c.Unstash(args[1]); ok {
+			filter = v
+		}
+	}
+	return m.render(c, page, filter, replace)
+}
+
+func (m *Module) render(c *bot.Context, page int, filter string, replace bool) error {
 	tpl, err := m.txn.Inspect()
 	if err != nil {
 		return err
@@ -76,53 +102,106 @@ func (m *Module) list(c *bot.Context, replace bool) error {
 	if err != nil {
 		return err
 	}
+	shown := matching(rules, filter)
+
+	if page < 0 {
+		page = 0
+	}
+	pages := max(1, (len(shown)+pageSize-1)/pageSize)
+	if page >= pages {
+		page = pages - 1
+	}
+	start := page * pageSize
+	end := min(start+pageSize, len(shown))
 
 	var sb strings.Builder
-	sb.WriteString("<b>🔀 路由规则</b>\n\n")
-	if len(rules) == 0 {
+	sb.WriteString(fmt.Sprintf("<b>🔀 路由规则</b> (%d)", len(rules)))
+	if filter != "" {
+		sb.WriteString(fmt.Sprintf("  <i>筛选 “%s” — %d 条</i>", bot.Escape(filter), len(shown)))
+	}
+	sb.WriteString("\n\n")
+	switch {
+	case len(rules) == 0:
 		sb.WriteString("<i>还没有任何规则。</i>\n")
+	case len(shown) == 0:
+		sb.WriteString("<i>没有匹配的规则。</i>\n")
 	}
-	shadowed := false
-	for _, r := range rules {
-		marker := " "
-		if r.IsCatchAll() {
-			marker = "⚠️"
-		} else if shadowed {
-			marker = "🚫"
-		}
-		sb.WriteString(fmt.Sprintf("%s <b>%d.</b> %s → <b>%s</b>\n",
-			marker, r.Index+1, bot.Escape(r.Summary()), bot.Escape(r.Target())))
-		if r.IsCatchAll() {
-			sb.WriteString("      <i>catch-all，之后的规则不会生效</i>\n")
-			shadowed = true
-		}
+	floor := xraycfg.SafeFloor(rules)
+	for _, r := range shown[start:end] {
+		sb.WriteString(ruleLine(r, floor))
 	}
-	if shadowed {
-		sb.WriteString("\n🚫 = 被前面的 catch-all 遮蔽")
+	if pages > 1 {
+		sb.WriteString(fmt.Sprintf("\n第 %d / %d 页\n", page+1, pages))
+	}
+	if len(shown) > 0 {
+		sb.WriteString("\n<i>发送序号查看或编辑某条</i>")
 	}
 
-	kb := buildListKeyboard(c, len(rules))
-	if replace {
-		return c.Replace(sb.String(), kb)
-	}
-	return c.Send(sb.String(), kb)
+	c.Await("select")
+	return send(c, replace, sb.String(), m.listKeyboard(c, page, pages, filter))
 }
 
-func buildListKeyboard(c *bot.Context, count int) *telego.InlineKeyboardMarkup {
-	var rows [][]telego.InlineKeyboardButton
-	var row []telego.InlineKeyboardButton
-	for i := 0; i < count; i++ {
-		row = append(row, bot.Button(strconv.Itoa(i+1), c.CallbackData("view", strconv.Itoa(i))))
-		if len(row) == 6 {
-			rows = append(rows, row)
-			row = nil
+func ruleLine(r xraycfg.Rule, floor int) string {
+	marker := "  "
+	switch {
+	case r.Index < floor:
+		marker = "🔒"
+	case r.IsCatchAll():
+		marker = "⚠️"
+	}
+	line := fmt.Sprintf("%s <b>%d.</b> %s → <b>%s</b>\n",
+		marker, r.Index+1, bot.Escape(truncateText(r.Summary(), 44)), bot.Escape(r.Target()))
+	if r.IsCatchAll() {
+		line += "      <i>catch-all，之后的规则不会生效</i>\n"
+	}
+	return line
+}
+
+// matching filters on the rendered summary and target, which is what the user
+// is looking at — searching the raw JSON would match fields they cannot see.
+func matching(rules []xraycfg.Rule, filter string) []xraycfg.Rule {
+	if filter == "" {
+		return rules
+	}
+	needle := strings.ToLower(filter)
+	var out []xraycfg.Rule
+	for _, r := range rules {
+		if strings.Contains(strings.ToLower(r.Summary()+" "+r.Target()), needle) {
+			out = append(out, r)
 		}
 	}
-	if len(row) > 0 {
-		rows = append(rows, row)
+	return out
+}
+
+func (m *Module) listKeyboard(c *bot.Context, page, pages int, filter string) *telego.InlineKeyboardMarkup {
+	token := c.Stash(filter)
+	var rows [][]telego.InlineKeyboardButton
+	if pages > 1 {
+		var nav []telego.InlineKeyboardButton
+		if page > 0 {
+			nav = append(nav, bot.Button("← 上一页", c.CallbackData("list", strconv.Itoa(page-1), token)))
+		}
+		if page < pages-1 {
+			nav = append(nav, bot.Button("下一页 →", c.CallbackData("list", strconv.Itoa(page+1), token)))
+		}
+		rows = append(rows, nav)
 	}
-	rows = append(rows, bot.InlineRow(bot.Button("+ 新增规则", c.CallbackData("new"))))
+	filterLabel := "🔍 筛选"
+	if filter != "" {
+		filterLabel = "🔍 清除筛选"
+	}
+	rows = append(rows, []telego.InlineKeyboardButton{
+		bot.Button("+ 新增规则", c.CallbackData("new")),
+		bot.Button(filterLabel, c.CallbackData("filter")),
+	})
 	return bot.Keyboard(rows...)
+}
+
+func send(c *bot.Context, replace bool, text string, kb *telego.InlineKeyboardMarkup) error {
+	if replace {
+		return c.Replace(text, kb)
+	}
+	return c.Send(text, kb)
 }
 
 func (m *Module) view(c *bot.Context, idx int) error {
