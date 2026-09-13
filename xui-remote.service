@@ -5,17 +5,26 @@ Wants=network-online.target
 
 [Service]
 Type=simple
+User=xui-remote
+Group=xui-remote
 ExecStart=/usr/local/bin/xui-remote -config /etc/xui-remote/config.yaml
 Restart=always
 RestartSec=5
-# The config file holds an admin API token; keep the unit's view of the disk
-# narrow so a compromise of the bot does not hand over the whole host.
+
+# The config holds an admin API token, which is full control of the panel, so
+# the service sees as little of the host as it can while still writing state.
+StateDirectory=xui-remote
+Environment=HOME=/var/lib/xui-remote
 NoNewPrivileges=true
 PrivateTmp=true
+PrivateDevices=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/xui-remote
-Environment=HOME=/var/lib/xui-remote
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictSUIDSGID=true
+LockPersonality=true
 
 [Install]
 WantedBy=multi-user.target
