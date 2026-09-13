@@ -538,7 +538,7 @@ func (m *Module) retarget(c *bot.Context, args []string) error {
 
 	field, values := rules[idx].MatchValues()
 	summary := fmt.Sprintf("规则 %d 出站 %s → %s", idx+1, before, tag)
-	err = m.txn.EditWithChecks("routing", summary, retargetChecks(field, values, tag, idx),
+	err = m.txn.EditWithChecks("routing", summary, retargetChecks(rules[idx], field, values, tag, idx),
 		func(tpl map[string]any) error {
 			staged, err := xraycfg.Rules(tpl)
 			if err != nil {
@@ -557,16 +557,32 @@ func (m *Module) retarget(c *bot.Context, args []string) error {
 	return m.staged(c, summary)
 }
 
-func retargetChecks(field string, values []string, tag string, idx int) []state.Check {
+func retargetChecks(r xraycfg.Rule, field string, values []string, tag string, idx int) []state.Check {
 	if field == "" {
 		return nil
 	}
+	user := firstUser(r)
 	checks := make([]state.Check, 0, maxChecks)
 	for _, v := range values {
 		if len(checks) == maxChecks {
 			break
 		}
-		checks = append(checks, state.Check{Kind: field, Value: v, Expect: tag, Index: idx})
+		checks = append(checks, state.Check{Kind: field, Value: v, Expect: tag, Index: idx, User: user})
 	}
 	return checks
+}
+
+// firstUser picks an identity the rule accepts; any one of them is enough to
+// make the probe reach the rule at all.
+func firstUser(r xraycfg.Rule) string {
+	items, ok := r.Raw["user"].([]any)
+	if !ok {
+		return ""
+	}
+	for _, it := range items {
+		if s, _ := it.(string); s != "" {
+			return s
+		}
+	}
+	return ""
 }

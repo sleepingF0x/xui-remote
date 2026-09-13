@@ -163,19 +163,22 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID string) error {
 	var sb strings.Builder
 	passed, failed := 0, 0
+	shadowed := false
 	for _, r := range results {
 		switch {
 		case !r.Verified():
 			sb.WriteString(fmt.Sprintf("➖ %s\n    <i>%s</i>\n", bot.Escape(r.Source), bot.Escape(r.Skipped)))
 		case r.OK:
 			passed++
-			sb.WriteString(fmt.Sprintf("✅ %s\n    取样 %s → %s\n",
-				bot.Escape(r.Source), bot.Escape(r.Target), bot.Escape(r.Actual)))
+			sb.WriteString(fmt.Sprintf("✅ %s\n    取样 %s%s → %s\n",
+				bot.Escape(r.Source), bot.Escape(r.Target), asUser(r), bot.Escape(r.Actual)))
 		default:
 			failed++
-			sb.WriteString(fmt.Sprintf("❌ %s\n    取样 %s → <b>%s</b>，期望 <b>%s</b>\n",
-				bot.Escape(r.Source), bot.Escape(r.Target), bot.Escape(r.Actual), bot.Escape(r.Expect)))
+			sb.WriteString(fmt.Sprintf("❌ %s\n    取样 %s%s → <b>%s</b>，期望 <b>%s</b>\n",
+				bot.Escape(r.Source), bot.Escape(r.Target), asUser(r),
+				bot.Escape(r.Actual), bot.Escape(r.Expect)))
 			if idx, ok := m.shadowedBy(r); ok {
+				shadowed = true
 				sb.WriteString(fmt.Sprintf("    <i>可能被第 %d 条规则遮蔽</i>\n", idx+1))
 			}
 		}
@@ -195,9 +198,7 @@ func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID stri
 		bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", snapshotID))),
 		bot.InlineRow(bot.Home()),
 	)
-	return c.Send("⚠️ "+head+sb.String()+
-		"\n<i>规则已写入但没生效。分类之间的重叠算不出来，所以这只能在提交后发现。</i>",
-		bot.Keyboard(rows...))
+	return c.Send("⚠️ "+head+sb.String()+"\n<i>"+failureNote(shadowed)+"</i>", bot.Keyboard(rows...))
 }
 
 // shadowedBy looks for an earlier rule pointing at the outbound the traffic
@@ -286,6 +287,24 @@ func (m *Module) rollback(c *bot.Context, args []string) error {
 	return c.Replace(
 		fmt.Sprintf("✅ 已回滚到 <code>%s</code>，Xray 已重启。\n\n回滚前的状态也存了快照，可以再滚回去。", args[0]),
 		bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回快照列表", "snaps"))))
+}
+
+func asUser(r verify.Result) string {
+	if r.User == "" {
+		return ""
+	}
+	return "（以 " + bot.Escape(r.User) + " 身份）"
+}
+
+// failureNote only blames shadowing when an earlier rule was actually found
+// pointing at the outbound the traffic took; otherwise it states the fact and
+// leaves the cause open rather than asserting one.
+func failureNote(shadowed bool) string {
+	if shadowed {
+		return "规则已写入但没生效，被更靠前的规则接走了。分类之间的重叠算不出来，所以这只能在提交后发现。"
+	}
+	return "规则已写入，但取样流量没走到期望的出站。可能是规则还有其他未满足的约束，" +
+		"或取样到的域名并不真正属于该分类。"
 }
 
 func send(c *bot.Context, replace bool, text string, kb *telego.InlineKeyboardMarkup) error {

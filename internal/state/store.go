@@ -37,6 +37,9 @@ type Check struct {
 	Kind   string `json:"kind"`
 	Value  string `json:"value"`
 	Expect string `json:"expect"`
+	// User is the identity the probe must run as. A rule narrowed by user is
+	// unreachable without it, so omitting it reports a failure that is not one.
+	User string `json:"user,omitempty"`
 	// Index is where the rule was placed, so a failure can name the earlier
 	// rule that is shadowing it.
 	Index int `json:"index"`

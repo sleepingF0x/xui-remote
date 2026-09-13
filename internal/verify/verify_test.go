@@ -101,7 +101,11 @@ func fakePanel(t *testing.T, entries []panel.GeoEntry, outboundFor map[string]st
 			write(`{"total":` + itoa(len(entries)) + `,"items":` + string(raw) + `}`)
 		case strings.HasSuffix(r.URL.Path, "/routeTest"):
 			_ = r.ParseForm()
-			tag, ok := outboundFor[r.PostForm.Get("domain")+r.PostForm.Get("ip")]
+			key := r.PostForm.Get("domain") + r.PostForm.Get("ip")
+			if u := r.PostForm.Get("email"); u != "" {
+				key += "@" + u
+			}
+			tag, ok := outboundFor[key]
 			if !ok {
 				write(`{"matched":false}`)
 				return
@@ -199,5 +203,29 @@ func TestRunTreatsNoMatchAsAFailureNotASkip(t *testing.T) {
 	}
 	if got[0].OK {
 		t.Fatal("falling through to the default outbound is not a pass")
+	}
+}
+
+// A rule narrowed by user is unreachable to a probe that names none, so
+// verifying a retarget of one reported a failure that was not one.
+func TestRunProbesAsTheRulesUser(t *testing.T) {
+	// Only the identity-qualified key resolves, mirroring the live panel.
+	v := New(fakePanel(t, nil, map[string]string{"twitter.jp@admin": "us-vircs"}))
+
+	withUser := v.Run([]state.Check{{
+		Kind: "domain", Value: "domain:twitter.jp", Expect: "us-vircs", User: "admin",
+	}})
+	if !withUser[0].OK {
+		t.Fatalf("probe as the rule's user must match: %+v", withUser[0])
+	}
+	if withUser[0].User != "admin" {
+		t.Fatalf("result must record the identity it ran as, got %q", withUser[0].User)
+	}
+
+	withoutUser := v.Run([]state.Check{{
+		Kind: "domain", Value: "domain:twitter.jp", Expect: "us-vircs",
+	}})
+	if withoutUser[0].OK {
+		t.Fatal("without the identity the rule cannot match; this is the old false alarm")
 	}
 }

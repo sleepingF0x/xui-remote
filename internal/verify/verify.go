@@ -38,6 +38,8 @@ type Result struct {
 	Expect string
 	Actual string
 	OK     bool
+	// User is the identity the probe ran as, empty when the rule is not scoped.
+	User string
 	// Skipped explains why no assertion could be made; OK is meaningless then.
 	Skipped string
 	// Index is the position of the rule under test.
@@ -55,7 +57,7 @@ func (v *Verifier) Run(checks []state.Check) []Result {
 }
 
 func (v *Verifier) one(ch state.Check) Result {
-	res := Result{Source: ch.Value, Expect: ch.Expect, Index: ch.Index}
+	res := Result{Source: ch.Value, Expect: ch.Expect, Index: ch.Index, User: ch.User}
 
 	target, reason := v.resolve(ch)
 	if target == "" {
@@ -64,7 +66,7 @@ func (v *Verifier) one(ch state.Check) Result {
 	}
 	res.Target = target
 
-	req := panel.RouteTestRequest{Port: 443, Network: "tcp"}
+	req := panel.RouteTestRequest{Port: 443, Network: "tcp", Email: ch.User}
 	if ch.Kind == "ip" {
 		req.IP = target
 	} else {
