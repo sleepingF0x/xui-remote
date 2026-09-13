@@ -5,6 +5,7 @@ package client
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,7 +17,9 @@ import (
 	"github.com/lichenhao/xui-remote/internal/panel"
 )
 
-const maxSearchResults = 12
+// clientsPerPage keeps the button column readable; the panel pages server-side
+// so a large install never loads more than one screen.
+const clientsPerPage = 8
 
 type Module struct {
 	panel *panel.Client
@@ -30,27 +33,129 @@ func (m *Module) Title() string { return "👥 客户端" }
 func (m *Module) Commands() []bot.Command {
 	return []bot.Command{{
 		Name:        "client",
-		Description: "查找客户端并取订阅链接",
+		Description: "客户端列表与订阅链接",
 		Handler: func(c *bot.Context, args string) error {
 			if args == "" {
 				return m.Menu(c)
 			}
-			return m.search(c, args)
+			return m.list(c, 0, args, false)
 		},
 	}}
 }
 
 func (m *Module) Menu(c *bot.Context) error {
-	c.Await("search")
-	return c.Send("发送客户端标识（邮箱或名称，支持部分匹配）：",
-		bot.Keyboard(bot.InlineRow(bot.Home())))
+	return m.list(c, 0, "", false)
 }
 
 func (m *Module) Prompt(c *bot.Context, key, text string) error {
 	if key != "search" {
 		return nil
 	}
-	return m.search(c, text)
+	query := strings.TrimSpace(text)
+	if query == "-" {
+		query = ""
+	}
+	return m.list(c, 0, query, false)
+}
+
+// list renders one page of clients. Their identifiers are the names people
+// know them by, so the buttons carry them directly rather than an index.
+func (m *Module) list(c *bot.Context, page int, filter string, replace bool) error {
+	if page < 0 {
+		page = 0
+	}
+	result, err := m.panel.SearchClients(filter, page+1, clientsPerPage)
+	if err != nil {
+		return fmt.Errorf("读取客户端失败: %w", err)
+	}
+	pages := max(1, (result.Filtered+clientsPerPage-1)/clientsPerPage)
+	if page >= pages && pages > 0 {
+		return m.list(c, pages-1, filter, replace)
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("<b>👥 客户端</b> (%d)", result.Total))
+	if filter != "" {
+		sb.WriteString(fmt.Sprintf("  <i>搜索 “%s” — %d 个</i>", bot.Escape(filter), result.Filtered))
+	}
+	sb.WriteString("\n\n")
+	if len(result.Items) == 0 {
+		sb.WriteString("<i>没有匹配的客户端。</i>\n")
+	}
+	for _, it := range result.Items {
+		sb.WriteString(fmt.Sprintf("%s <b>%s</b>\n      %s · %s\n",
+			statusMark(it), bot.Escape(it.Email), slimTraffic(it), slimExpiry(it)))
+	}
+	if pages > 1 {
+		sb.WriteString(fmt.Sprintf("\n第 %d / %d 页\n", page+1, pages))
+	}
+
+	var rows [][]telego.InlineKeyboardButton
+	var row []telego.InlineKeyboardButton
+	for _, it := range result.Items {
+		row = append(row, bot.Button(truncate(it.Email, 18), c.CallbackData("view", stashedRef(c, it.Email))))
+		if len(row) == 2 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	token := c.Stash(filter)
+	if pages > 1 {
+		var nav []telego.InlineKeyboardButton
+		if page > 0 {
+			nav = append(nav, bot.Button("← 上一页", c.CallbackData("page", strconv.Itoa(page-1), token)))
+		}
+		if page < pages-1 {
+			nav = append(nav, bot.Button("下一页 →", c.CallbackData("page", strconv.Itoa(page+1), token)))
+		}
+		rows = append(rows, nav)
+	}
+	searchLabel := "🔍 搜索"
+	if filter != "" {
+		searchLabel = "🔍 清除搜索"
+	}
+	rows = append(rows, []telego.InlineKeyboardButton{
+		bot.Button(searchLabel, c.CallbackData("search")),
+		bot.Home(),
+	})
+
+	if replace {
+		return c.Replace(sb.String(), bot.Keyboard(rows...))
+	}
+	return c.Send(sb.String(), bot.Keyboard(rows...))
+}
+
+func slimTraffic(it panel.ClientSlim) string {
+	var used int64
+	if it.Traffic != nil {
+		used = it.Traffic.Up + it.Traffic.Down
+	}
+	if it.TotalGB <= 0 {
+		return humanBytes(used) + " / 不限"
+	}
+	return fmt.Sprintf("%s / %s", humanBytes(used), humanBytes(it.TotalGB))
+}
+
+func slimExpiry(it panel.ClientSlim) string {
+	if it.ExpiryTime == 0 {
+		return "不过期"
+	}
+	left := time.Until(time.UnixMilli(it.ExpiryTime))
+	if left <= 0 {
+		return "已过期"
+	}
+	return fmt.Sprintf("剩 %d 天", int(left.Hours()/24))
+}
+
+func truncate(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 // MatchText offers a client lookup for an email-shaped input, which is what
@@ -66,6 +171,19 @@ func (m *Module) MatchText(input string) []bot.TextOffer {
 }
 
 func (m *Module) Callback(c *bot.Context, action string, args []string) error {
+	// Navigation carries a page or a filter, not a client, so it is dispatched
+	// before the identifier is resolved.
+	switch action {
+	case "list":
+		return m.list(c, 0, "", true)
+	case "page":
+		return m.list(c, atoiArg(args, 0), stashedArg(c, args, 1), true)
+	case "search":
+		c.Await("search")
+		return c.Replace("发送客户端标识片段搜索，发送 <code>-</code> 显示全部：",
+			bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回列表", "list"))))
+	}
+
 	email, ok := resolve(c, args)
 	if !ok {
 		return c.Replace("这个按钮已过期，请重新查找客户端。")
@@ -83,6 +201,27 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 		return m.traffic(c, email)
 	}
 	return nil
+}
+
+func atoiArg(args []string, i int) int {
+	if i >= len(args) {
+		return 0
+	}
+	n, err := strconv.Atoi(args[i])
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// stashedArg reads an optional stashed value; a miss means the filter is gone,
+// which is a harmless fallback to the unfiltered list.
+func stashedArg(c *bot.Context, args []string, i int) string {
+	if i >= len(args) {
+		return ""
+	}
+	v, _ := c.Unstash(args[i])
+	return v
 }
 
 // An identifier reaches a callback either stashed — it can outgrow Telegram's
@@ -121,28 +260,6 @@ func resolve(c *bot.Context, args []string) (string, bool) {
 		return value, value != ""
 	}
 	return c.Unstash(value)
-}
-
-func (m *Module) search(c *bot.Context, query string) error {
-	page, err := m.panel.SearchClients(strings.TrimSpace(query), 1, maxSearchResults)
-	if err != nil {
-		return fmt.Errorf("查找失败: %w", err)
-	}
-	if len(page.Items) == 0 {
-		return c.Send(fmt.Sprintf("没有匹配 <code>%s</code> 的客户端。", bot.Escape(query)))
-	}
-	if len(page.Items) == 1 {
-		return m.view(c, page.Items[0].Email, false)
-	}
-
-	var rows [][]telego.InlineKeyboardButton
-	for _, it := range page.Items {
-		rows = append(rows, bot.InlineRow(
-			bot.Button(statusMark(it)+" "+it.Email, c.CallbackData("view", stashedRef(c, it.Email)))))
-	}
-	rows = append(rows, bot.InlineRow(bot.Home()))
-	header := fmt.Sprintf("匹配到 <b>%d</b> 个（共 %d）：", len(page.Items), page.Filtered)
-	return c.Send(header, bot.Keyboard(rows...))
 }
 
 func (m *Module) view(c *bot.Context, email string, replace bool) error {

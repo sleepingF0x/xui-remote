@@ -1,6 +1,11 @@
 package client
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/lichenhao/xui-remote/internal/panel"
+)
 
 // A stash token is eight hex characters, which is also a plausible client
 // name — so a miss that fell back to the raw argument rendered the token
@@ -48,5 +53,39 @@ func TestInlineRefRoundTrips(t *testing.T) {
 	kind, value, ok := parseRef([]string{inlineRef("alice@example.com")[:1], "alice@example.com"})
 	if !ok || kind != refInline || value != "alice@example.com" {
 		t.Fatalf("parseRef = (%q, %q, %v)", kind, value, ok)
+	}
+}
+
+func TestSlimExpiryReadsAsTimeLeft(t *testing.T) {
+	tests := []struct {
+		name   string
+		millis int64
+		want   string
+	}{
+		{"never", 0, "不过期"},
+		{"past", time.Now().Add(-24 * time.Hour).UnixMilli(), "已过期"},
+		{"future", time.Now().Add(72 * time.Hour).UnixMilli(), "剩 2 天"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := slimExpiry(panel.ClientSlim{ExpiryTime: tt.millis}); got != tt.want {
+				t.Fatalf("slimExpiry() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSlimTrafficDistinguishesUnlimited(t *testing.T) {
+	withCap := panel.ClientSlim{TotalGB: 1 << 30, Traffic: &panel.ClientTraffic{Up: 1 << 29, Down: 0}}
+	if got := slimTraffic(withCap); got != "512.00 MB / 1.00 GB" {
+		t.Fatalf("capped = %q", got)
+	}
+	uncapped := panel.ClientSlim{Traffic: &panel.ClientTraffic{Up: 1 << 20}}
+	if got := slimTraffic(uncapped); got != "1.00 MB / 不限" {
+		t.Fatalf("uncapped = %q", got)
+	}
+	// A client the panel reported no counters for must not panic.
+	if got := slimTraffic(panel.ClientSlim{}); got != "0 B / 不限" {
+		t.Fatalf("no traffic row = %q", got)
 	}
 }
