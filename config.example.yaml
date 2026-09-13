@@ -1,0 +1,22 @@
+panel:
+  # Ends at the API group. The path contains "panel" twice when the panel's
+  # webBasePath is /panel/: once for the base path, once for the API group.
+  base_url: "https://dmit-lax-pro.tailbf1789.ts.net/panel/panel/api/"
+  # 面板 → 设置 → 安全 → API 令牌 → 新建令牌。明文只显示一次。
+  api_token: ""
+  # Overrides the Host header so generated share links carry a reachable
+  # address. Leave empty when the panel has host entries for every inbound.
+  public_host: ""
+  timeout_seconds: 20
+  insecure_skip_verify: false
+
+telegram:
+  token: ""
+  # 必填。空列表会被拒绝启动 —— 否则任何找到这个 bot 的人都能改配置。
+  allowed_chat_ids:
+    - 0
+
+state:
+  # 暂存区和配置快照存放位置，默认 ~/.xui-remote
+  dir: ""
+  max_snapshots: 20

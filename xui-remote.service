@@ -1,0 +1,21 @@
+[Unit]
+Description=x-ui remote configuration Telegram bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/xui-remote -config /etc/xui-remote/config.yaml
+Restart=always
+RestartSec=5
+# The config file holds an admin API token; keep the unit's view of the disk
+# narrow so a compromise of the bot does not hand over the whole host.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/xui-remote
+Environment=HOME=/var/lib/xui-remote
+
+[Install]
+WantedBy=multi-user.target

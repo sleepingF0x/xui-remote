@@ -1,0 +1,161 @@
+package xraycfg
+
+import "testing"
+
+func rule(tag string, raw map[string]any) Rule {
+	if raw == nil {
+		raw = map[string]any{}
+	}
+	raw["outboundTag"] = tag
+	return Rule{Raw: raw}
+}
+
+func tags(rules []Rule) []string {
+	out := make([]string, len(rules))
+	for i, r := range rules {
+		out[i] = r.Target()
+	}
+	return out
+}
+
+func TestInsertPlacesRuleAndReindexes(t *testing.T) {
+	base := []Rule{rule("a", nil), rule("b", nil), rule("c", nil)}
+	tests := []struct {
+		name string
+		at   int
+		want []string
+	}{
+		{"top", 0, []string{"new", "a", "b", "c"}},
+		{"middle", 2, []string{"a", "b", "new", "c"}},
+		{"end", 3, []string{"a", "b", "c", "new"}},
+		{"past end clamps", 99, []string{"a", "b", "c", "new"}},
+		{"negative clamps", -5, []string{"new", "a", "b", "c"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := Insert(append([]Rule{}, base...), tt.at, rule("new", nil))
+			if g := tags(got); !equal(g, tt.want) {
+				t.Fatalf("order = %v, want %v", g, tt.want)
+			}
+			for i, r := range got {
+				if r.Index != i {
+					t.Fatalf("rule %d carries Index %d", i, r.Index)
+				}
+			}
+		})
+	}
+}
+
+func TestMoveReordersWithoutLosingRules(t *testing.T) {
+	base := []Rule{rule("a", nil), rule("b", nil), rule("c", nil), rule("d", nil)}
+	tests := []struct {
+		name     string
+		from, to int
+		want     []string
+	}{
+		{"down one", 0, 1, []string{"b", "a", "c", "d"}},
+		{"up one", 3, 2, []string{"a", "b", "d", "c"}},
+		{"to top", 2, 0, []string{"c", "a", "b", "d"}},
+		{"past end clamps", 0, 99, []string{"b", "c", "d", "a"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Move(append([]Rule{}, base...), tt.from, tt.to)
+			if err != nil {
+				t.Fatalf("Move: %v", err)
+			}
+			if g := tags(got); !equal(g, tt.want) {
+				t.Fatalf("order = %v, want %v", g, tt.want)
+			}
+		})
+	}
+}
+
+func TestMoveRejectsUnknownSource(t *testing.T) {
+	_, err := Move([]Rule{rule("a", nil)}, 5, 0)
+	if err == nil {
+		t.Fatal("moving a nonexistent rule must fail, not silently no-op")
+	}
+}
+
+func TestIsCatchAllOnlyForUnnarrowedRules(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  map[string]any
+		want bool
+	}{
+		{"bare outbound", map[string]any{}, true},
+		{"network only", map[string]any{"network": "tcp,udp"}, true},
+		{"inboundTag only", map[string]any{"inboundTag": []any{"in-1"}}, true},
+		{"has domain", map[string]any{"domain": []any{"geosite:cn"}}, false},
+		{"has ip", map[string]any{"ip": []any{"geoip:cn"}}, false},
+		{"has port", map[string]any{"port": "443"}, false},
+		{"empty domain list does not narrow", map[string]any{"domain": []any{}}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := rule("x", tt.raw).IsCatchAll(); got != tt.want {
+				t.Fatalf("IsCatchAll() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuggestPositionLandsBeforeFirstCatchAll(t *testing.T) {
+	rules := []Rule{
+		rule("block", map[string]any{"domain": []any{"geosite:ads"}}),
+		rule("direct", map[string]any{"ip": []any{"geoip:cn"}}),
+		rule("proxy", map[string]any{"network": "tcp,udp"}),
+		rule("never", map[string]any{"domain": []any{"geosite:netflix"}}),
+	}
+	if got := SuggestPosition(rules); got != 2 {
+		t.Fatalf("SuggestPosition() = %d, want 2 (before the catch-all)", got)
+	}
+}
+
+func TestSuggestPositionAppendsWhenNoCatchAll(t *testing.T) {
+	rules := []Rule{rule("a", map[string]any{"domain": []any{"x"}})}
+	if got := SuggestPosition(rules); got != 1 {
+		t.Fatalf("SuggestPosition() = %d, want 1", got)
+	}
+}
+
+func TestRulesRoundTripsThroughTemplate(t *testing.T) {
+	tpl := map[string]any{"routing": map[string]any{"rules": []any{
+		map[string]any{"outboundTag": "a", "domain": []any{"example.com"}},
+	}}}
+	rules, err := Rules(tpl)
+	if err != nil {
+		t.Fatalf("Rules: %v", err)
+	}
+	SetRules(tpl, Insert(rules, 0, rule("b", nil)))
+	after, err := Rules(tpl)
+	if err != nil {
+		t.Fatalf("Rules after write: %v", err)
+	}
+	if g := tags(after); !equal(g, []string{"b", "a"}) {
+		t.Fatalf("order after write = %v", g)
+	}
+}
+
+func TestRulesOnTemplateWithoutRoutingSection(t *testing.T) {
+	rules, err := Rules(map[string]any{})
+	if err != nil {
+		t.Fatalf("Rules: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("want no rules, got %d", len(rules))
+	}
+}
+
+func equal(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
