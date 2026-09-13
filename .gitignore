@@ -12,3 +12,6 @@ config.yaml
 coverage.*
 
 .DS_Store
+
+# 截图原始文件名（整理后放 docs/screenshots/）
+PixPin_*.png

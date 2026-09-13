@@ -78,6 +78,8 @@ Telegram 里对 bot 发 `/start`。
 | 👥 **客户端** | 列表、搜索、订阅链接、二维码、流量与到期 |
 | 📊 **状态** | Xray 状态、错误输出、重启 |
 
+<img src="docs/screenshots/routing-rules.png" width="380" alt="路由规则列表">
+
 也可以**直接发内容**，bot 会列出候选动作让你选：
 
 | 你发什么 | 能做什么 |
@@ -160,6 +162,20 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /tm
 scp /tmp/xr $HOST:/tmp/xui-remote
 ssh $HOST 'sudo install -m 0755 /tmp/xui-remote /usr/local/bin/xui-remote \
   && sudo systemctl restart xui-remote && rm /tmp/xui-remote'
+```
+
+### 用 Docker
+
+面板只监听 `127.0.0.1`，容器够不到宿主机的回环地址，所以需要 host 网络 —— 这基本抵消了
+容器的隔离收益。**更推荐上面的 systemd 方式**（专用用户 + 只读文件系统）。
+
+面板本身也跑在 Docker 里的话，把两者接进同一个 network 更合适，这时删掉
+`network_mode: host` 并把 `base_url` 改成面板容器名。
+
+```bash
+cp config.example.yaml config.yaml   # 填好 token
+docker compose up -d
+docker compose logs -f
 ```
 
 ---
