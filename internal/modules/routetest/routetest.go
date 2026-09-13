@@ -41,7 +41,8 @@ func (m *Module) Commands() []bot.Command {
 
 func (m *Module) Menu(c *bot.Context) error {
 	c.Await("target")
-	return c.Send("发送要测试的<b>域名</b>或 <b>IP</b>：")
+	return c.Send("发送要测试的<b>域名</b>或 <b>IP</b>：",
+		bot.Keyboard(bot.InlineRow(bot.Home())))
 }
 
 func (m *Module) Prompt(c *bot.Context, key, text string) error {
@@ -131,7 +132,10 @@ func (m *Module) run(c *bot.Context, input string, port int, network string, rep
 			bot.Button("443", c.CallbackData("run", token, "443", network)),
 			bot.Button("改 "+otherNet, c.CallbackData("run", token, strconv.Itoa(port), otherNet)),
 		),
-		bot.InlineRow(bot.Button("重新测试", c.CallbackData("run", token, strconv.Itoa(port), network))),
+		bot.InlineRow(
+			bot.Button("重新测试", c.CallbackData("run", token, strconv.Itoa(port), network)),
+			bot.Home(),
+		),
 	)
 	if replace {
 		return c.Replace(sb.String(), kb)

@@ -124,7 +124,10 @@ func (m *Module) overview(c *bot.Context, replace bool) error {
 			bot.Button("🩺 健康检查", c.CallbackData("health")),
 			bot.Button("⚖️ 负载均衡", c.CallbackData("bal")),
 		),
-		bot.InlineRow(bot.Button("📥 订阅管理", c.CallbackData("subs"))),
+		bot.InlineRow(
+			bot.Button("📥 订阅管理", c.CallbackData("subs")),
+			bot.Home(),
+		),
 	)
 	return send(c, replace, sb.String(), bot.Keyboard(rows...))
 }

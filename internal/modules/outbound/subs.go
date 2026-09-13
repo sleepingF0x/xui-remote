@@ -47,13 +47,14 @@ func (m *Module) Prompt(c *bot.Context, key, text string) error {
 	body := fmt.Sprintf("解析到 <b>%d</b> 个节点。\n\n保存为订阅后，面板会定期自动刷新。", len(obs))
 	return c.Send(body, bot.Keyboard(
 		bot.InlineRow(bot.Button(fmt.Sprintf("确认添加 (%d 个节点)", len(obs)), c.CallbackData("subadd", token))),
-		bot.InlineRow(bot.Button("取消", "core:cancel")),
+		bot.InlineRow(bot.BackTo(c, "返回订阅列表", "subs")),
 	))
 }
 
 func (m *Module) askSubURL(c *bot.Context) error {
 	c.Await("suburl")
-	return c.Send("发送订阅链接（机场订阅 URL）：")
+	return c.Send("发送订阅链接（机场订阅 URL）：",
+		bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回订阅列表", "subs"))))
 }
 
 func (m *Module) addSub(c *bot.Context, args []string) error {

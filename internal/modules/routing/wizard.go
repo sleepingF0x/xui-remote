@@ -55,7 +55,7 @@ func (m *Module) pickTarget(c *bot.Context) error {
 	if len(row) > 0 {
 		rows = append(rows, row)
 	}
-	rows = append(rows, bot.InlineRow(bot.Button("取消", "core:cancel")))
+	rows = append(rows, bot.InlineRow(bot.BackTo(c, "返回列表", "list")))
 	return c.Replace("<b>新增规则 1/3</b>\n\n流量指向哪个出站？", bot.Keyboard(rows...))
 }
 
@@ -78,7 +78,7 @@ func (m *Module) pickKind(c *bot.Context, args []string) error {
 				bot.Button("域名 / 分类", c.CallbackData("nk", args[0], "domain")),
 				bot.Button("IP / 网段", c.CallbackData("nk", args[0], "ip")),
 			),
-			bot.InlineRow(bot.Button("取消", "core:cancel")),
+			bot.InlineRow(bot.BackTo(c, "返回列表", "list")),
 		))
 }
 
@@ -107,7 +107,8 @@ func (m *Module) askValue(c *bot.Context, args []string) error {
 		hint = "发送 IP、网段或 geoip 分类，多个用空格或换行分隔：\n\n" +
 			"<code>1.1.1.1</code>\n<code>10.0.0.0/8</code>\n<code>geoip:cn</code>"
 	}
-	return c.Replace("<b>新增规则 3/3</b>\n\n" + hint)
+	return c.Replace("<b>新增规则 3/3</b>\n\n"+hint,
+		bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回列表", "list"))))
 }
 
 func (m *Module) askPosition(c *bot.Context, args []string) error {
@@ -127,7 +128,8 @@ func (m *Module) askPosition(c *bot.Context, args []string) error {
 		return err
 	}
 	c.AwaitWith("position", d.encode())
-	return c.Replace(positionPrompt(rules, d))
+	return c.Replace(positionPrompt(rules, d),
+		bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回列表", "list"))))
 }
 
 // positionPrompt renders the current ordering with the infrastructure prefix
@@ -211,7 +213,7 @@ func (m *Module) PromptWith(c *bot.Context, key, payload, text string) error {
 			bot.Button("末尾", c.CallbackData("np", token, strconv.Itoa(len(rules)))),
 		),
 		bot.InlineRow(bot.Button("指定序号…", c.CallbackData("npick", token))),
-		bot.InlineRow(bot.Button("取消", "core:cancel")),
+		bot.InlineRow(bot.BackTo(c, "返回列表", "list")),
 	))
 }
 
@@ -294,7 +296,8 @@ func (m *Module) askMoveTo(c *bot.Context, idx int) error {
 		return fmt.Errorf("第 %d 条是基础设施规则，它的位置不该动", idx+1)
 	}
 	c.AwaitWith("moveto", strconv.Itoa(idx))
-	return c.Replace(movePrompt(rules, idx))
+	return c.Replace(movePrompt(rules, idx),
+		bot.Keyboard(bot.InlineRow(bot.Back(c, "view", strconv.Itoa(idx)))))
 }
 
 func movePrompt(rules []xraycfg.Rule, from int) string {

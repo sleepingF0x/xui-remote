@@ -193,7 +193,7 @@ func (m *Module) listKeyboard(c *bot.Context, page, pages int, filter string) *t
 	rows = append(rows, []telego.InlineKeyboardButton{
 		bot.Button("+ 新增规则", c.CallbackData("new")),
 		bot.Button(filterLabel, c.CallbackData("filter")),
-	})
+	}, bot.InlineRow(bot.Home()))
 	return bot.Keyboard(rows...)
 }
 

@@ -75,7 +75,10 @@ func (m *Module) render(c *bot.Context, replace bool) error {
 			bot.Button("刷新", c.CallbackData("refresh")),
 			bot.Button("错误输出", c.CallbackData("log")),
 		),
-		bot.InlineRow(bot.Button("重启 Xray", c.CallbackData("restart"))),
+		bot.InlineRow(
+			bot.Button("重启 Xray", c.CallbackData("restart")),
+			bot.Home(),
+		),
 	)
 	if replace {
 		return c.Replace(sb.String(), kb)
@@ -89,9 +92,11 @@ func (m *Module) showXrayLog(c *bot.Context) error {
 		return fmt.Errorf("读取 Xray 输出失败: %w", err)
 	}
 	if strings.TrimSpace(out) == "" {
-		return c.Send("Xray 没有错误输出。")
+		return c.Send("Xray 没有错误输出。",
+			bot.Keyboard(bot.InlineRow(bot.Back(c, "refresh"))))
 	}
-	return c.Send("<b>Xray 错误输出</b>\n" + bot.Code(out))
+	return c.Send("<b>Xray 错误输出</b>\n"+bot.Code(out),
+		bot.Keyboard(bot.InlineRow(bot.Back(c, "refresh"))))
 }
 
 func stateIcon(state string) string {

@@ -42,7 +42,8 @@ func (m *Module) Commands() []bot.Command {
 
 func (m *Module) Menu(c *bot.Context) error {
 	c.Await("search")
-	return c.Send("发送客户端标识（邮箱或名称，支持部分匹配）：")
+	return c.Send("发送客户端标识（邮箱或名称，支持部分匹配）：",
+		bot.Keyboard(bot.InlineRow(bot.Home())))
 }
 
 func (m *Module) Prompt(c *bot.Context, key, text string) error {
@@ -110,6 +111,7 @@ func (m *Module) search(c *bot.Context, query string) error {
 		rows = append(rows, bot.InlineRow(
 			bot.Button(statusMark(it)+" "+it.Email, c.CallbackData("view", c.Stash(it.Email)))))
 	}
+	rows = append(rows, bot.InlineRow(bot.Home()))
 	header := fmt.Sprintf("匹配到 <b>%d</b> 个（共 %d）：", len(page.Items), page.Filtered)
 	return c.Send(header, bot.Keyboard(rows...))
 }
@@ -142,6 +144,7 @@ func (m *Module) view(c *bot.Context, email string, replace bool) error {
 			bot.Button("二维码", c.CallbackData("qr", token)),
 			bot.Button("刷新", c.CallbackData("view", token)),
 		),
+		bot.InlineRow(bot.Home()),
 	)
 	if replace {
 		return c.Replace(sb.String(), kb)
@@ -154,7 +157,7 @@ func (m *Module) subscription(c *bot.Context, email string) error {
 	if err != nil {
 		return err
 	}
-	return c.Send("<b>订阅链接</b>\n" + bot.Code(subURL))
+	return c.Send("<b>订阅链接</b>\n"+bot.Code(subURL), backToClient(c, email))
 }
 
 func (m *Module) shareLinks(c *bot.Context, email string) error {
@@ -174,7 +177,7 @@ func (m *Module) shareLinks(c *bot.Context, email string) error {
 	for _, l := range links {
 		sb.WriteString(bot.Code(l) + "\n\n")
 	}
-	return c.Send(sb.String())
+	return c.Send(sb.String(), backToClient(c, email))
 }
 
 func (m *Module) qr(c *bot.Context, email string) error {
@@ -186,7 +189,7 @@ func (m *Module) qr(c *bot.Context, email string) error {
 	if err != nil {
 		return fmt.Errorf("生成二维码失败: %w", err)
 	}
-	return c.SendPhoto("sub.png", png, "订阅二维码 — "+bot.Escape(email))
+	return c.SendPhoto("sub.png", png, "订阅二维码 — "+bot.Escape(email), backToClient(c, email))
 }
 
 func (m *Module) traffic(c *bot.Context, email string) error {
@@ -195,7 +198,8 @@ func (m *Module) traffic(c *bot.Context, email string) error {
 		return err
 	}
 	return c.Send(fmt.Sprintf("<b>%s</b>\n上行 %s · 下行 %s\n%s",
-		bot.Escape(email), humanBytes(t.Up), humanBytes(t.Down), trafficText(t)))
+		bot.Escape(email), humanBytes(t.Up), humanBytes(t.Down), trafficText(t)),
+		backToClient(c, email))
 }
 
 // subURL joins the panel's configured subscription base with the client's
@@ -233,6 +237,12 @@ func (m *Module) subURL(email string) (string, error) {
 		return "", fmt.Errorf("面板没有配置订阅地址（subURI），生成出来的链接客户端访问不到")
 	}
 	return strings.TrimSuffix(settings.SubURI, "/") + "/" + subID, nil
+}
+
+// backToClient returns to the client's own screen rather than the search that
+// found it — the search text is not carried, and a dead end is worse.
+func backToClient(c *bot.Context, email string) *telego.InlineKeyboardMarkup {
+	return bot.Keyboard(bot.InlineRow(bot.Back(c, "view", c.Stash(email))))
 }
 
 func statusMark(it panel.ClientSlim) string {

@@ -78,6 +78,7 @@ func (m *Module) list(c *bot.Context, replace bool) error {
 	}
 	sb.WriteString("\n<i>入站不在配置快照范围内，启停立即生效、不进暂存区。\n改端口请在面板操作 —— 需要完整对象往返，API 上做有损坏入站的风险。</i>")
 
+	rows = append(rows, bot.InlineRow(bot.Home()))
 	if replace {
 		return c.Replace(sb.String(), bot.Keyboard(rows...))
 	}

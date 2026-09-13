@@ -68,7 +68,10 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 func (m *Module) diff(c *bot.Context, replace bool) error {
 	st, err := m.txn.Pending()
 	if errors.Is(err, txn.ErrNothingStaged) {
-		kb := bot.Keyboard(bot.InlineRow(bot.Button("配置快照", c.CallbackData("snaps"))))
+		kb := bot.Keyboard(bot.InlineRow(
+			bot.Button("配置快照", c.CallbackData("snaps")),
+			bot.Home(),
+		))
 		return send(c, replace, "<b>⚙️ 配置</b>\n\n暂存区是空的，当前配置即线上配置。", kb)
 	}
 	if err != nil {
@@ -89,6 +92,7 @@ func (m *Module) diff(c *bot.Context, replace bool) error {
 			bot.Button("丢弃", c.CallbackData("discard")),
 			bot.Button("配置快照", c.CallbackData("snaps")),
 		),
+		bot.InlineRow(bot.Home()),
 	)
 	return send(c, replace, sb.String(), kb)
 }
@@ -96,7 +100,8 @@ func (m *Module) diff(c *bot.Context, replace bool) error {
 func (m *Module) confirmApply(c *bot.Context, replace bool) error {
 	st, err := m.txn.Pending()
 	if errors.Is(err, txn.ErrNothingStaged) {
-		return send(c, replace, "暂存区是空的，没有要提交的改动。", nil)
+		return send(c, replace, "暂存区是空的，没有要提交的改动。",
+			bot.Keyboard(bot.InlineRow(bot.Home())))
 	}
 	if err != nil {
 		return err
@@ -119,6 +124,7 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 			bot.Keyboard(
 				bot.InlineRow(bot.Button("仍然覆盖提交", c.CallbackData("applyforce"))),
 				bot.InlineRow(bot.Button("丢弃暂存区", c.CallbackData("discard"))),
+				bot.InlineRow(bot.BackTo(c, "返回暂存区", "diff")),
 			))
 	}
 	if err != nil {
@@ -140,6 +146,7 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 		return c.Replace(sb.String(), bot.Keyboard(
 			bot.InlineRow(bot.Button("🧪 去测试路由", "rtest:menu")),
 			bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", res.Snapshot.ID))),
+			bot.InlineRow(bot.Home()),
 		))
 	}
 	// Report the apply before verifying: the probes take a few seconds each and
@@ -176,7 +183,7 @@ func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID stri
 
 	head := fmt.Sprintf("<b>验证 %d/%d 通过</b>\n\n", passed, passed+failed)
 	if failed == 0 {
-		return c.Send(head + sb.String())
+		return c.Send(head+sb.String(), bot.Keyboard(bot.InlineRow(bot.Home())))
 	}
 
 	var rows [][]telego.InlineKeyboardButton
@@ -184,7 +191,10 @@ func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID stri
 		rows = append(rows, bot.InlineRow(
 			bot.Button(fmt.Sprintf("调整第 %d 条的位置", idx+1), bot.CallbackData("route", "moveto", strconv.Itoa(idx)))))
 	}
-	rows = append(rows, bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", snapshotID))))
+	rows = append(rows,
+		bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", snapshotID))),
+		bot.InlineRow(bot.Home()),
+	)
 	return c.Send("⚠️ "+head+sb.String()+
 		"\n<i>规则已写入但没生效。分类之间的重叠算不出来，所以这只能在提交后发现。</i>",
 		bot.Keyboard(rows...))
@@ -234,7 +244,8 @@ func (m *Module) snapshots(c *bot.Context, replace bool) error {
 		return err
 	}
 	if len(snaps) == 0 {
-		return send(c, replace, "还没有配置快照。每次提交前会自动存一份。", nil)
+		return send(c, replace, "还没有配置快照。每次提交前会自动存一份。",
+			bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回配置", "diff"))))
 	}
 
 	var sb strings.Builder
@@ -248,6 +259,7 @@ func (m *Module) snapshots(c *bot.Context, replace bool) error {
 			s.ID, humanAge(s.At), bot.Escape(truncate(s.Summary, 80))))
 		rows = append(rows, bot.InlineRow(bot.Button("回滚到 "+s.ID, c.CallbackData("rb", s.ID))))
 	}
+	rows = append(rows, bot.InlineRow(bot.BackTo(c, "返回配置", "diff")))
 	sb.WriteString("\n<i>回滚是整份写回，会一并撤销该快照之后的所有配置改动。\n入站、客户端、出站订阅不在快照范围内。</i>")
 	return send(c, replace, sb.String(), bot.Keyboard(rows...))
 }
@@ -271,7 +283,9 @@ func (m *Module) rollback(c *bot.Context, args []string) error {
 	if err := m.txn.Rollback(args[0]); err != nil {
 		return fmt.Errorf("回滚失败: %w", err)
 	}
-	return c.Replace(fmt.Sprintf("✅ 已回滚到 <code>%s</code>，Xray 已重启。\n\n回滚前的状态也存了快照，可以再滚回去。", args[0]))
+	return c.Replace(
+		fmt.Sprintf("✅ 已回滚到 <code>%s</code>，Xray 已重启。\n\n回滚前的状态也存了快照，可以再滚回去。", args[0]),
+		bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回快照列表", "snaps"))))
 }
 
 func send(c *bot.Context, replace bool, text string, kb *telego.InlineKeyboardMarkup) error {

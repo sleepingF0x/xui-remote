@@ -99,9 +99,10 @@ func (m *Module) setBalancer(c *bot.Context, args []string) error {
 	if err := m.panel.OverrideBalancer(tag, target); err != nil {
 		return fmt.Errorf("设置失败: %w", err)
 	}
+	back := bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回负载均衡", "bal")))
 	if target == "" {
-		return c.Replace(fmt.Sprintf("✅ <b>%s</b> 已恢复自动选择。", bot.Escape(tag)))
+		return c.Replace(fmt.Sprintf("✅ <b>%s</b> 已恢复自动选择。", bot.Escape(tag)), back)
 	}
 	return c.Replace(fmt.Sprintf("✅ <b>%s</b> 已钉到 <b>%s</b>。\n\n<i>Xray 重启后失效。</i>",
-		bot.Escape(tag), bot.Escape(target)))
+		bot.Escape(tag), bot.Escape(target)), back)
 }

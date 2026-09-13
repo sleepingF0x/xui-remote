@@ -279,9 +279,12 @@ func (b *Bot) onCallback(ctx context.Context, q telego.CallbackQuery) {
 		messageID = msg.MessageID
 	}
 	if parts[0] == "core" {
-		if parts[1] == "cancel" {
-			c := b.context(ctx, chatID, messageID, "")
+		c := b.context(ctx, chatID, messageID, "")
+		switch parts[1] {
+		case "cancel":
 			_ = c.Replace("已取消。")
+		case "menu":
+			_ = c.Replace(b.menuText())
 		}
 		return
 	}
