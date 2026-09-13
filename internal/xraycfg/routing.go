@@ -150,16 +150,46 @@ func Move(rules []Rule, from, to int) ([]Rule, error) {
 	return Insert(out, to, rule), nil
 }
 
-// SuggestPosition returns the index a new rule should take: just before the
-// first catch-all, since anything after that one never matches. It is a
-// heuristic — overlap between geosite categories is not evaluated.
-func SuggestPosition(rules []Rule) int {
+// SafeFloor is the earliest index a new destination rule may take. A stock
+// 3x-ui rule set opens with infrastructure rules that carry no domain matcher
+// — the api inbound's route, the private-address block, protocol blocks — and
+// their order is load-bearing: the api inbound's own traffic targets 127.0.0.1,
+// so a rule placed above the api route can swallow it and take the panel's
+// gRPC API (stats, online clients, route testing) down with it.
+func SafeFloor(rules []Rule) int {
 	for i, r := range rules {
-		if r.IsCatchAll() {
+		if has(r.Raw["domain"]) {
 			return i
 		}
 	}
 	return len(rules)
+}
+
+// SuggestPosition returns the index a new rule should take: just before the
+// first catch-all, but never above SafeFloor. It is a heuristic — overlap
+// between geosite categories is not evaluated.
+func SuggestPosition(rules []Rule) int {
+	floor := SafeFloor(rules)
+	for i, r := range rules {
+		if r.IsCatchAll() && i >= floor {
+			return i
+		}
+	}
+	if floor > len(rules) {
+		return len(rules)
+	}
+	return len(rules)
+}
+
+// ClampPosition keeps a chosen index out of the infrastructure prefix.
+func ClampPosition(rules []Rule, idx int) int {
+	if floor := SafeFloor(rules); idx < floor {
+		return floor
+	}
+	if idx > len(rules) {
+		return len(rules)
+	}
+	return idx
 }
 
 func reindex(rules []Rule) []Rule {

@@ -127,19 +127,25 @@ func (m *Module) PromptWith(c *bot.Context, key, payload, text string) error {
 		return err
 	}
 	suggested := xraycfg.SuggestPosition(rules)
+	floor := xraycfg.SafeFloor(rules)
 	token := c.Stash(d.encode())
 
-	body := fmt.Sprintf("<b>规则预览</b>\n\n%s: %s\n→ <b>%s</b>\n\n插到第几位？",
-		d.Kind, bot.Escape(strings.Join(values, ", ")), bot.Escape(d.Target))
+	var body strings.Builder
+	body.WriteString(fmt.Sprintf("<b>规则预览</b>\n\n%s: %s\n→ <b>%s</b>\n\n插到第几位？",
+		d.Kind, bot.Escape(strings.Join(values, ", ")), bot.Escape(d.Target)))
+	if floor > 0 {
+		body.WriteString(fmt.Sprintf("\n\n<i>前 %d 条是基础设施规则（api 路由、私有地址与协议封锁），"+
+			"顺序承重，不能插到它们上面。</i>", floor))
+	}
 
 	suggestLabel := fmt.Sprintf("推荐：第 %d 位", suggested+1)
 	if suggested < len(rules) {
 		suggestLabel += "（catch-all 之前）"
 	}
-	return c.Send(body, bot.Keyboard(
+	return c.Send(body.String(), bot.Keyboard(
 		bot.InlineRow(bot.Button(suggestLabel, c.CallbackData("np", token, strconv.Itoa(suggested)))),
 		bot.InlineRow(
-			bot.Button("置顶", c.CallbackData("np", token, "0")),
+			bot.Button(fmt.Sprintf("最前（第 %d 位）", floor+1), c.CallbackData("np", token, strconv.Itoa(floor))),
 			bot.Button("末尾", c.CallbackData("np", token, strconv.Itoa(len(rules)))),
 		),
 		bot.InlineRow(bot.Button("取消", "core:cancel")),
@@ -177,6 +183,14 @@ func (m *Module) stageNew(c *bot.Context, args []string) error {
 		"outboundTag": d.Target,
 	}}
 
+	current, err := m.rules()
+	if err != nil {
+		return err
+	}
+	// Clamp again at commit time: the button carries a position computed when
+	// the preview was drawn, and the rule set may have moved since.
+	pos = xraycfg.ClampPosition(current, pos)
+
 	summary := fmt.Sprintf("新增规则 @%d (%s: %s → %s)",
 		pos+1, field, strings.Join(d.Values, ", "), d.Target)
 	err = m.txn.Edit("routing", summary, func(tpl map[string]any) error {
@@ -184,7 +198,7 @@ func (m *Module) stageNew(c *bot.Context, args []string) error {
 		if err != nil {
 			return err
 		}
-		xraycfg.SetRules(tpl, xraycfg.Insert(rules, pos, rule))
+		xraycfg.SetRules(tpl, xraycfg.Insert(rules, xraycfg.ClampPosition(rules, pos), rule))
 		return nil
 	})
 	if err != nil {

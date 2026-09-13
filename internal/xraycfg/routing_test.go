@@ -176,3 +176,63 @@ func equal(a, b []string) bool {
 	}
 	return true
 }
+
+// Layout taken from a live panel. The api inbound listens on 127.0.0.1, so its
+// own traffic matches geoip:private — rule 1 must stay above rule 2 or the
+// panel's gRPC API gets blocked. Nothing may be inserted into that prefix.
+func liveInfraRules() []Rule {
+	return []Rule{
+		rule("api", map[string]any{"inboundTag": []any{"api"}, "ruleTag": "system-api"}),
+		rule("blocked", map[string]any{"ip": []any{"geoip:private"}, "ruleTag": "block-private"}),
+		rule("blocked", map[string]any{"protocol": []any{"bittorrent"}, "ruleTag": "block-bittorrent"}),
+		rule("us-vircs", map[string]any{"domain": []any{"domain:ip.sb"}, "user": []any{"admin"}}),
+		rule("tw-gcp", map[string]any{"domain": []any{"ext:custom.dat:CRYPTO"}}),
+	}
+}
+
+func TestSafeFloorSkipsInfrastructurePrefix(t *testing.T) {
+	if got := SafeFloor(liveInfraRules()); got != 3 {
+		t.Fatalf("SafeFloor() = %d, want 3 (first rule carrying a domain matcher)", got)
+	}
+}
+
+func TestSafeFloorIsZeroWhenFirstRuleIsABusinessRule(t *testing.T) {
+	rules := []Rule{rule("a", map[string]any{"domain": []any{"geosite:cn"}})}
+	if got := SafeFloor(rules); got != 0 {
+		t.Fatalf("SafeFloor() = %d, want 0", got)
+	}
+}
+
+func TestClampPositionRefusesTheInfrastructurePrefix(t *testing.T) {
+	rules := liveInfraRules()
+	tests := []struct {
+		name string
+		in   int
+		want int
+	}{
+		{"above api rule", 0, 3},
+		{"between api and private block", 1, 3},
+		{"at the floor", 3, 3},
+		{"below the floor", 4, 4},
+		{"past the end clamps to append", 99, len(rules)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ClampPosition(rules, tt.in); got != tt.want {
+				t.Fatalf("ClampPosition(%d) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSuggestPositionNeverLandsInsideTheInfrastructurePrefix(t *testing.T) {
+	// An inboundTag-scoped rule sits first; a real catch-all sits last.
+	rules := append(liveInfraRules(), rule("proxy", map[string]any{"network": "tcp,udp"}))
+	got := SuggestPosition(rules)
+	if floor := SafeFloor(rules); got < floor {
+		t.Fatalf("SuggestPosition() = %d, below the floor %d", got, floor)
+	}
+	if got != 5 {
+		t.Fatalf("SuggestPosition() = %d, want 5 (before the catch-all)", got)
+	}
+}

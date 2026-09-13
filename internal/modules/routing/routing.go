@@ -187,12 +187,24 @@ func (m *Module) deleteRule(c *bot.Context, idx int) error {
 }
 
 func (m *Module) move(c *bot.Context, from, to int) error {
+	current, err := m.rules()
+	if err != nil {
+		return err
+	}
+	// Moving a business rule above the infrastructure prefix can swallow the
+	// api inbound's own traffic, which takes the panel's gRPC API down.
+	if floor := xraycfg.SafeFloor(current); to < floor && from >= floor {
+		return c.Replace(
+			fmt.Sprintf("不能再往上了。\n\n<i>前 %d 条是基础设施规则，顺序承重 —— "+
+				"业务规则排到它们上面会吃掉 api 入站的流量，面板的统计和路由测试都会失效。</i>", floor),
+			bot.Keyboard(bot.InlineRow(bot.Button("← 返回列表", c.CallbackData("list")))))
+	}
 	if to < 0 {
 		return c.Replace("已经是第一条了。", bot.Keyboard(
 			bot.InlineRow(bot.Button("← 返回列表", c.CallbackData("list")))))
 	}
 	summary := fmt.Sprintf("规则 %d 移到第 %d 位", from+1, to+1)
-	err := m.txn.Edit("routing", summary, func(tpl map[string]any) error {
+	err = m.txn.Edit("routing", summary, func(tpl map[string]any) error {
 		rules, err := xraycfg.Rules(tpl)
 		if err != nil {
 			return err
