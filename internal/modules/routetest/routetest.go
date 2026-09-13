@@ -3,18 +3,23 @@
 package routetest
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
 
+	"github.com/mymmrac/telego"
+
 	"github.com/lichenhao/xui-remote/internal/bot"
 	"github.com/lichenhao/xui-remote/internal/detect"
 	"github.com/lichenhao/xui-remote/internal/panel"
+	"github.com/lichenhao/xui-remote/internal/xraycfg"
 )
 
 const (
 	defaultPort    = 443
 	defaultNetwork = "tcp"
+	maxUserButtons = 12
 )
 
 type Module struct {
@@ -26,6 +31,27 @@ func New(p *panel.Client) *Module { return &Module{panel: p} }
 func (m *Module) Name() string  { return "rtest" }
 func (m *Module) Title() string { return "🧪 路由测试" }
 
+// probe is the full set of parameters one test runs with. It is stashed as a
+// whole because Telegram's callback data cannot carry a domain plus four
+// fields, and because the user constraint has to survive every re-test.
+type probe struct {
+	Target  string `json:"t"`
+	Port    int    `json:"p"`
+	Network string `json:"n"`
+	Email   string `json:"e"`
+}
+
+func (p probe) encode() string {
+	raw, _ := json.Marshal(p)
+	return string(raw)
+}
+
+func decodeProbe(s string) (probe, error) {
+	var p probe
+	err := json.Unmarshal([]byte(s), &p)
+	return p, err
+}
+
 func (m *Module) Commands() []bot.Command {
 	return []bot.Command{{
 		Name:        "test",
@@ -34,7 +60,7 @@ func (m *Module) Commands() []bot.Command {
 			if args == "" {
 				return m.Menu(c)
 			}
-			return m.run(c, args, defaultPort, defaultNetwork, false)
+			return m.run(c, probe{Target: args, Port: defaultPort, Network: defaultNetwork}, false)
 		},
 	}}
 }
@@ -46,10 +72,34 @@ func (m *Module) Menu(c *bot.Context) error {
 }
 
 func (m *Module) Prompt(c *bot.Context, key, text string) error {
-	if key != "target" {
+	switch key {
+	case "target":
+		return m.run(c, probe{Target: text, Port: defaultPort, Network: defaultNetwork}, false)
+	case "port":
 		return nil
 	}
-	return m.run(c, text, defaultPort, defaultNetwork, false)
+	return nil
+}
+
+func (m *Module) PromptWith(c *bot.Context, key, payload, text string) error {
+	p, err := decodeProbe(payload)
+	if err != nil {
+		return err
+	}
+	switch key {
+	case "port":
+		n, convErr := strconv.Atoi(strings.TrimSpace(text))
+		if convErr != nil || n < 1 || n > 65535 {
+			c.AwaitWith("port", payload)
+			return fmt.Errorf("端口要是 1 – 65535 之间的数字")
+		}
+		p.Port = n
+		return m.run(c, p, false)
+	case "user":
+		p.Email = strings.TrimSpace(text)
+		return m.run(c, p, false)
+	}
+	return nil
 }
 
 // MatchText offers a route lookup for anything that names a destination.
@@ -69,49 +119,117 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 	case "menu":
 		return m.Menu(c)
 	case "ask":
-		// The dispatcher passes the value inline; it is short by construction
-		// because it came from a classified host.
 		if len(args) == 0 {
 			return nil
 		}
-		return m.run(c, strings.Join(args, ":"), defaultPort, defaultNetwork, true)
+		return m.run(c, probe{Target: strings.Join(args, ":"), Port: defaultPort, Network: defaultNetwork}, true)
+	}
+
+	if len(args) == 0 {
+		return nil
+	}
+	raw, ok := c.Unstash(args[0])
+	if !ok {
+		return c.Replace("这个按钮已过期，请重新测试。")
+	}
+	p, err := decodeProbe(raw)
+	if err != nil {
+		return err
+	}
+
+	switch action {
 	case "run":
-		if len(args) < 3 {
+		return m.run(c, p, true)
+	case "port":
+		if len(args) < 2 {
 			return nil
 		}
-		target, ok := c.Unstash(args[0])
-		if !ok {
-			return c.Replace("这个按钮已过期，请重新测试。")
+		n, _ := strconv.Atoi(args[1])
+		p.Port = n
+		return m.run(c, p, true)
+	case "net":
+		p.Network = map[string]string{"tcp": "udp", "udp": "tcp"}[p.Network]
+		return m.run(c, p, true)
+	case "askport":
+		c.AwaitWith("port", p.encode())
+		return c.Replace("发送端口号（1 – 65535）：",
+			bot.Keyboard(bot.InlineRow(bot.Back(c, "run", args[0]))))
+	case "askuser":
+		return m.pickUser(c, p)
+	case "user":
+		if len(args) > 1 {
+			if email, ok := c.Unstash(args[1]); ok {
+				p.Email = email
+			}
+		} else {
+			p.Email = ""
 		}
-		port, _ := strconv.Atoi(args[1])
-		return m.run(c, target, port, args[2], true)
+		return m.run(c, p, true)
 	}
 	return nil
 }
 
-func (m *Module) run(c *bot.Context, input string, port int, network string, replace bool) error {
-	r := detect.Classify(input)
+// pickUser lists clients as buttons: seven of this panel's rules are scoped to
+// a user, and typing an address to test them would be the common case.
+func (m *Module) pickUser(c *bot.Context, p probe) error {
+	page, err := m.panel.SearchClients("", 1, maxUserButtons)
+	if err != nil {
+		return fmt.Errorf("读取客户端失败: %w", err)
+	}
+	var rows [][]telego.InlineKeyboardButton
+	var row []telego.InlineKeyboardButton
+	for _, it := range page.Items {
+		label := it.Email
+		if it.Email == p.Email {
+			label = "• " + label
+		}
+		row = append(row, bot.Button(label, c.CallbackData("user", c.Stash(p.encode()), c.Stash(it.Email))))
+		if len(row) == 2 {
+			rows = append(rows, row)
+			row = nil
+		}
+	}
+	if len(row) > 0 {
+		rows = append(rows, row)
+	}
+	rows = append(rows,
+		bot.InlineRow(bot.Button("不指定用户", c.CallbackData("user", c.Stash(p.encode())))),
+		bot.InlineRow(bot.Back(c, "run", c.Stash(p.encode()))),
+	)
+	return c.Replace("以哪个用户的身份测试？\n\n<i>限定了 user 的规则，只有指定用户时才可能命中。</i>",
+		bot.Keyboard(rows...))
+}
+
+func (m *Module) run(c *bot.Context, p probe, replace bool) error {
+	r := detect.Classify(p.Target)
 	if r.Value == "" {
-		return fmt.Errorf("认不出 %q 是域名还是 IP", input)
+		return fmt.Errorf("认不出 %q 是域名还是 IP", p.Target)
 	}
-
-	req := panel.RouteTestRequest{Port: port, Network: network}
-	switch r.Kind {
-	case detect.KindIP:
-		req.IP = r.Value
-	case detect.KindCIDR:
+	if r.Kind == detect.KindCIDR {
 		return fmt.Errorf("路由测试需要具体 IP，不能用网段")
-	default:
-		req.Domain = r.Value
+	}
+	p.Target = r.Value
+	if p.Port == 0 {
+		p.Port = defaultPort
+	}
+	if p.Network == "" {
+		p.Network = defaultNetwork
 	}
 
+	req := panel.RouteTestRequest{Port: p.Port, Network: p.Network, Email: p.Email}
+	if r.Kind == detect.KindIP {
+		req.IP = p.Target
+	} else {
+		req.Domain = p.Target
+	}
 	res, err := m.panel.RouteTest(req)
 	if err != nil {
 		return fmt.Errorf("测试失败: %w", err)
 	}
 
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("<b>%s</b>  (%s:%d)\n\n", bot.Escape(r.Value), bot.Escape(network), port))
+	sb.WriteString("<b>" + bot.Escape(p.Target) + "</b>\n")
+	sb.WriteString(bot.Escape(describe(p)) + "\n\n")
 	if !res.Matched {
 		sb.WriteString("→ <b>未匹配任何规则</b>，走默认出站（outbounds 第一条）")
 	} else {
@@ -120,20 +238,33 @@ func (m *Module) run(c *bot.Context, input string, port int, network string, rep
 			sb.WriteString("\n经过负载均衡: " + bot.Escape(strings.Join(res.GroupTags, " → ")))
 		}
 	}
+	if p.Email == "" {
+		if n := m.userScopedRules(); n > 0 {
+			sb.WriteString(fmt.Sprintf("\n\n⚠️ 有 <b>%d</b> 条规则限定了用户，不指定用户时它们永远匹配不上。", n))
+		}
+	}
 
-	token := c.Stash(r.Value)
-	otherNet := "udp"
-	if network == "udp" {
-		otherNet = "tcp"
+	token := c.Stash(p.encode())
+	otherNet := "UDP"
+	if p.Network == "udp" {
+		otherNet = "TCP"
+	}
+	userLabel := "指定用户…"
+	if p.Email != "" {
+		userLabel = "换用户…"
 	}
 	kb := bot.Keyboard(
 		bot.InlineRow(
-			bot.Button("80", c.CallbackData("run", token, "80", network)),
-			bot.Button("443", c.CallbackData("run", token, "443", network)),
-			bot.Button("改 "+otherNet, c.CallbackData("run", token, strconv.Itoa(port), otherNet)),
+			bot.Button(portLabel(p, 80), c.CallbackData("port", token, "80")),
+			bot.Button(portLabel(p, 443), c.CallbackData("port", token, "443")),
+			bot.Button("端口…", c.CallbackData("askport", token)),
 		),
 		bot.InlineRow(
-			bot.Button("重新测试", c.CallbackData("run", token, strconv.Itoa(port), network)),
+			bot.Button("改用 "+otherNet, c.CallbackData("net", token)),
+			bot.Button(userLabel, c.CallbackData("askuser", token)),
+		),
+		bot.InlineRow(
+			bot.Button("重新测试", c.CallbackData("run", token)),
 			bot.Home(),
 		),
 	)
@@ -141,4 +272,44 @@ func (m *Module) run(c *bot.Context, input string, port int, network string, rep
 		return c.Replace(sb.String(), kb)
 	}
 	return c.Send(sb.String(), kb)
+}
+
+// describe spells out the parameters the result was produced under, so a
+// surprising answer can be traced to the inputs rather than to the rules.
+func describe(p probe) string {
+	user := "不指定用户"
+	if p.Email != "" {
+		user = "用户 " + p.Email
+	}
+	return fmt.Sprintf("%s · 端口 %d · %s", strings.ToUpper(p.Network), p.Port, user)
+}
+
+func portLabel(p probe, port int) string {
+	if p.Port == port {
+		return "• 端口 " + strconv.Itoa(port)
+	}
+	return "端口 " + strconv.Itoa(port)
+}
+
+// userScopedRules counts rules that can only match when a user is supplied.
+func (m *Module) userScopedRules() int {
+	setting, err := m.panel.GetXraySetting()
+	if err != nil {
+		return 0
+	}
+	tpl, err := xraycfg.ParseTemplate(setting.Template)
+	if err != nil {
+		return 0
+	}
+	rules, err := xraycfg.Rules(tpl)
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, r := range rules {
+		if items, ok := r.Raw["user"].([]any); ok && len(items) > 0 {
+			n++
+		}
+	}
+	return n
 }
