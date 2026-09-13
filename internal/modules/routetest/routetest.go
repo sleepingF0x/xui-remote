@@ -5,7 +5,6 @@ package routetest
 import (
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 
 	"github.com/mymmrac/telego"
@@ -72,34 +71,10 @@ func (m *Module) Menu(c *bot.Context) error {
 }
 
 func (m *Module) Prompt(c *bot.Context, key, text string) error {
-	switch key {
-	case "target":
-		return m.run(c, probe{Target: text, Port: defaultPort, Network: defaultNetwork}, false)
-	case "port":
+	if key != "target" {
 		return nil
 	}
-	return nil
-}
-
-func (m *Module) PromptWith(c *bot.Context, key, payload, text string) error {
-	p, err := decodeProbe(payload)
-	if err != nil {
-		return err
-	}
-	switch key {
-	case "port":
-		n, convErr := strconv.Atoi(strings.TrimSpace(text))
-		if convErr != nil || n < 1 || n > 65535 {
-			c.AwaitWith("port", payload)
-			return fmt.Errorf("端口要是 1 – 65535 之间的数字")
-		}
-		p.Port = n
-		return m.run(c, p, false)
-	case "user":
-		p.Email = strings.TrimSpace(text)
-		return m.run(c, p, false)
-	}
-	return nil
+	return m.run(c, probe{Target: text, Port: defaultPort, Network: defaultNetwork}, false)
 }
 
 // MatchText offers a route lookup for anything that names a destination.
@@ -140,23 +115,6 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 	switch action {
 	case "run":
 		return m.run(c, p, true)
-	case "port":
-		if len(args) < 2 {
-			return nil
-		}
-		n, _ := strconv.Atoi(args[1])
-		p.Port = n
-		return m.run(c, p, true)
-	case "net":
-		if len(args) < 2 {
-			return nil
-		}
-		p.Network = args[1]
-		return m.run(c, p, true)
-	case "askport":
-		c.AwaitWith("port", p.encode())
-		return c.Replace("发送端口号（1 – 65535）：",
-			bot.Keyboard(bot.InlineRow(bot.Back(c, "run", args[0]))))
 	case "askuser":
 		return m.pickUser(c, p)
 	case "user":
@@ -241,41 +199,22 @@ func (m *Module) run(c *bot.Context, p probe, replace bool) error {
 			sb.WriteString("\n经过负载均衡: " + bot.Escape(strings.Join(res.GroupTags, " → ")))
 		}
 	}
-	d := m.discriminators()
-	if p.Email == "" && d.user > 0 {
-		sb.WriteString(fmt.Sprintf("\n\n⚠️ 有 <b>%d</b> 条规则限定了用户，不指定用户时它们永远匹配不上。", d.user))
-	}
-	if d.anyUnused() {
-		sb.WriteString("\n\n<i>" + bot.Escape(unusedNote(d)) + "</i>")
+	if n := m.userScopedRules(); p.Email == "" && n > 0 {
+		sb.WriteString(fmt.Sprintf("\n\n⚠️ 有 <b>%d</b> 条规则限定了用户，不指定用户时它们永远匹配不上。", n))
 	}
 
 	token := c.Stash(p.encode())
-	var rows [][]telego.InlineKeyboardButton
-	if !d.known || d.port > 0 {
-		rows = append(rows, bot.InlineRow(
-			bot.Button(portLabel(p, 80), c.CallbackData("port", token, "80")),
-			bot.Button(portLabel(p, 443), c.CallbackData("port", token, "443")),
-			bot.Button("端口…", c.CallbackData("askport", token)),
-		))
+	userLabel := "指定用户…"
+	if p.Email != "" {
+		userLabel = "换用户…"
 	}
-	if !d.known || d.network > 0 {
-		rows = append(rows, bot.InlineRow(
-			bot.Button(netLabel(p, "tcp"), c.CallbackData("net", token, "tcp")),
-			bot.Button(netLabel(p, "udp"), c.CallbackData("net", token, "udp")),
-		))
-	}
-	if !d.known || d.user > 0 {
-		userLabel := "指定用户…"
-		if p.Email != "" {
-			userLabel = "换用户…"
-		}
-		rows = append(rows, bot.InlineRow(bot.Button(userLabel, c.CallbackData("askuser", token))))
-	}
-	rows = append(rows, bot.InlineRow(
-		bot.Button("重新测试", c.CallbackData("run", token)),
-		bot.Home(),
-	))
-	kb := bot.Keyboard(rows...)
+	kb := bot.Keyboard(
+		bot.InlineRow(bot.Button(userLabel, c.CallbackData("askuser", token))),
+		bot.InlineRow(
+			bot.Button("重新测试", c.CallbackData("run", token)),
+			bot.Home(),
+		),
+	)
 	if replace {
 		return c.Replace(sb.String(), kb)
 	}
@@ -292,76 +231,28 @@ func describe(p probe) string {
 	return fmt.Sprintf("%s · 端口 %d · %s", strings.ToUpper(p.Network), p.Port, user)
 }
 
-// unusedNote names the parameters this rule set ignores, so their absence
-// reads as a fact about the config rather than a missing feature.
-func unusedNote(d discriminators) string {
-	var unused []string
-	if d.port == 0 {
-		unused = append(unused, "端口")
-	}
-	if d.network == 0 {
-		unused = append(unused, "协议")
-	}
-	return "当前规则不区分" + strings.Join(unused, "和") + "，改这些不会影响结果。"
-}
-
-func portLabel(p probe, port int) string {
-	if p.Port == port {
-		return "• 端口 " + strconv.Itoa(port)
-	}
-	return "端口 " + strconv.Itoa(port)
-}
-
-// netLabel mirrors portLabel rather than reading as a verb: "改用 UDP" scans as
-// "改用户", which is a different control entirely on this same screen.
-func netLabel(p probe, network string) string {
-	label := "协议 " + strings.ToUpper(network)
-	if p.Network == network {
-		return "• " + label
-	}
-	return label
-}
-
-// discriminators counts how many rules actually narrow on each probe
-// parameter. A parameter no rule reads cannot change the answer, so offering
-// a control for it only invites the question of what it is for.
-type discriminators struct {
-	port    int
-	network int
-	user    int
-	known   bool
-}
-
-func (d discriminators) anyUnused() bool {
-	return d.known && (d.port == 0 || d.network == 0)
-}
-
-func (m *Module) discriminators() discriminators {
+// userScopedRules counts rules that can only match when a probe names a user;
+// without one they are silently unreachable and the result misleads.
+func (m *Module) userScopedRules() int {
 	setting, err := m.panel.GetXraySetting()
 	if err != nil {
-		return discriminators{}
+		return 0
 	}
 	tpl, err := xraycfg.ParseTemplate(setting.Template)
 	if err != nil {
-		return discriminators{}
+		return 0
 	}
 	rules, err := xraycfg.Rules(tpl)
 	if err != nil {
-		return discriminators{}
+		return 0
 	}
-	d := discriminators{known: true}
+	n := 0
 	for _, r := range rules {
-		if narrows(r.Raw["port"]) {
-			d.port++
-		}
-		if narrows(r.Raw["network"]) {
-			d.network++
-		}
 		if narrows(r.Raw["user"]) {
-			d.user++
+			n++
 		}
 	}
-	return d
+	return n
 }
 
 func narrows(v any) bool {
