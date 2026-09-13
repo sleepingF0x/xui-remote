@@ -148,7 +148,10 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 		p.Port = n
 		return m.run(c, p, true)
 	case "net":
-		p.Network = map[string]string{"tcp": "udp", "udp": "tcp"}[p.Network]
+		if len(args) < 2 {
+			return nil
+		}
+		p.Network = args[1]
 		return m.run(c, p, true)
 	case "askport":
 		c.AwaitWith("port", p.encode())
@@ -245,10 +248,6 @@ func (m *Module) run(c *bot.Context, p probe, replace bool) error {
 	}
 
 	token := c.Stash(p.encode())
-	otherNet := "UDP"
-	if p.Network == "udp" {
-		otherNet = "TCP"
-	}
 	userLabel := "指定用户…"
 	if p.Email != "" {
 		userLabel = "换用户…"
@@ -260,9 +259,10 @@ func (m *Module) run(c *bot.Context, p probe, replace bool) error {
 			bot.Button("端口…", c.CallbackData("askport", token)),
 		),
 		bot.InlineRow(
-			bot.Button("改用 "+otherNet, c.CallbackData("net", token)),
-			bot.Button(userLabel, c.CallbackData("askuser", token)),
+			bot.Button(netLabel(p, "tcp"), c.CallbackData("net", token, "tcp")),
+			bot.Button(netLabel(p, "udp"), c.CallbackData("net", token, "udp")),
 		),
+		bot.InlineRow(bot.Button(userLabel, c.CallbackData("askuser", token))),
 		bot.InlineRow(
 			bot.Button("重新测试", c.CallbackData("run", token)),
 			bot.Home(),
@@ -289,6 +289,16 @@ func portLabel(p probe, port int) string {
 		return "• 端口 " + strconv.Itoa(port)
 	}
 	return "端口 " + strconv.Itoa(port)
+}
+
+// netLabel mirrors portLabel rather than reading as a verb: "改用 UDP" scans as
+// "改用户", which is a different control entirely on this same screen.
+func netLabel(p probe, network string) string {
+	label := "协议 " + strings.ToUpper(network)
+	if p.Network == network {
+		return "• " + label
+	}
+	return label
 }
 
 // userScopedRules counts rules that can only match when a user is supplied.

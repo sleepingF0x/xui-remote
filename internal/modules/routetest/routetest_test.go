@@ -1,6 +1,9 @@
 package routetest
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // The result has to state what it was produced under: half this panel's rules
 // are user-scoped, so an unexpected answer is usually the parameters, not the
@@ -42,5 +45,22 @@ func TestProbeSurvivesAStashRoundTrip(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+// "改用 UDP" scanned as "改用户" — a different control on the same screen.
+// The label has to read as a setting, like the port buttons beside it.
+func TestNetLabelReadsAsASettingNotAVerb(t *testing.T) {
+	p := probe{Network: "tcp"}
+	if got := netLabel(p, "tcp"); got != "• 协议 TCP" {
+		t.Fatalf("active protocol label = %q", got)
+	}
+	if got := netLabel(p, "udp"); got != "协议 UDP" {
+		t.Fatalf("inactive protocol label = %q", got)
+	}
+	for _, network := range []string{"tcp", "udp"} {
+		if strings.HasPrefix(strings.TrimPrefix(netLabel(p, network), "• "), "改") {
+			t.Fatalf("label for %q still reads as a verb", network)
+		}
 	}
 }
