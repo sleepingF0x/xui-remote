@@ -25,6 +25,9 @@ func Back(c *Context, action string, args ...string) telego.InlineKeyboardButton
 
 // BackTo labels the destination when "返回" alone is ambiguous.
 func BackTo(c *Context, label, action string, args ...string) telego.InlineKeyboardButton {
+	if action == "list" && len(args) == 0 {
+		return c.ReturnButton("← "+label, CallbackData(c.Module, action))
+	}
 	return Button("← "+label, c.CallbackData(action, args...))
 }
 

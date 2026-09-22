@@ -81,8 +81,7 @@ func TestSnapshotsAreNewestFirstAndTrimmed(t *testing.T) {
 		if _, err := s.SaveSnapshot("改动", json.RawMessage(`{"n":`+string(rune('0'+i))+`}`)); err != nil {
 			t.Fatalf("SaveSnapshot: %v", err)
 		}
-		// Snapshot ids are second-resolution, so distinct saves need distinct seconds.
-		time.Sleep(1100 * time.Millisecond)
+		// Rapid saves must remain distinct even in the same second.
 	}
 	got, err := s.ListSnapshots()
 	if err != nil {

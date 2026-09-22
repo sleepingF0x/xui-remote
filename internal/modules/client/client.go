@@ -90,6 +90,8 @@ func (m *Module) list(c *bot.Context, page int, filter string, replace bool) err
 		sb.WriteString(fmt.Sprintf("\n第 %d / %d 页\n", page+1, pages))
 	}
 
+	token := c.Stash(filter)
+	c.ReturnTo = bot.CallbackData("client", "page", strconv.Itoa(page), token)
 	var rows [][]telego.InlineKeyboardButton
 	var row []telego.InlineKeyboardButton
 	for _, it := range result.Items {
@@ -102,7 +104,6 @@ func (m *Module) list(c *bot.Context, page int, filter string, replace bool) err
 	if len(row) > 0 {
 		rows = append(rows, row)
 	}
-	token := c.Stash(filter)
 	if pages > 1 {
 		var nav []telego.InlineKeyboardButton
 		if page > 0 {
@@ -113,12 +114,14 @@ func (m *Module) list(c *bot.Context, page int, filter string, replace bool) err
 		}
 		rows = append(rows, nav)
 	}
+	searchAction := "search"
 	searchLabel := "🔍 搜索"
 	if filter != "" {
 		searchLabel = "🔍 清除搜索"
+		searchAction = "clearsearch"
 	}
 	rows = append(rows, []telego.InlineKeyboardButton{
-		bot.Button(searchLabel, c.CallbackData("search")),
+		bot.Button(searchLabel, c.CallbackData(searchAction)),
 		bot.Home(),
 	})
 
@@ -174,6 +177,8 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 	// Navigation carries a page or a filter, not a client, so it is dispatched
 	// before the identifier is resolved.
 	switch action {
+	case "clearsearch":
+		return m.list(c, 0, "", true)
 	case "list":
 		return m.list(c, 0, "", true)
 	case "page":
@@ -290,7 +295,7 @@ func (m *Module) view(c *bot.Context, email string, replace bool) error {
 			bot.Button("二维码", c.CallbackData("qr", token)),
 			bot.Button("刷新", c.CallbackData("view", token)),
 		),
-		bot.InlineRow(bot.Home()),
+		bot.InlineRow(c.ReturnButton("← 返回列表", "client:list"), bot.Home()),
 	)
 	if replace {
 		return c.Replace(sb.String(), kb)
@@ -385,8 +390,7 @@ func (m *Module) subURL(email string) (string, error) {
 	return strings.TrimSuffix(settings.SubURI, "/") + "/" + subID, nil
 }
 
-// backToClient returns to the client's own screen rather than the search that
-// found it — the search text is not carried, and a dead end is worse.
+// Detail actions carry the original list context through the client screen.
 func backToClient(c *bot.Context, email string) *telego.InlineKeyboardMarkup {
 	return bot.Keyboard(bot.InlineRow(bot.Back(c, "view", stashedRef(c, email))))
 }

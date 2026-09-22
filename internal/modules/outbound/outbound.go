@@ -41,6 +41,11 @@ func (m *Module) Commands() []bot.Command {
 func (m *Module) Menu(c *bot.Context) error { return m.overview(c, false) }
 
 func (m *Module) Callback(c *bot.Context, action string, args []string) error {
+	if action == "view" || action == "del" || action == "delgo" {
+		if err := m.txn.CheckVersion(c.Revision); err != nil {
+			return c.Expired()
+		}
+	}
 	switch action {
 	case "menu":
 		return m.overview(c, true)
@@ -60,6 +65,8 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 		return m.setBalancer(c, args)
 	case "subs":
 		return m.listSubs(c, true)
+	case "subpreview":
+		return m.Prompt(c, "suburl", strings.Join(args, ":"))
 	case "subnew":
 		return m.askSubURL(c)
 	case "subadd":
@@ -77,10 +84,12 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 }
 
 func (m *Module) overview(c *bot.Context, replace bool) error {
-	tpl, err := m.txn.Inspect()
+	view, err := m.txn.View()
 	if err != nil {
 		return err
 	}
+	c.Revision = view.Version
+	tpl := view.Template
 	obs := xraycfg.Outbounds(tpl)
 
 	var sb strings.Builder
@@ -240,7 +249,7 @@ func (m *Module) deleteOutbound(c *bot.Context, idx int) error {
 		return fmt.Errorf("出站 %d 不存在", idx+1)
 	}
 	summary := fmt.Sprintf("删除出站 %s", obs[idx].Tag)
-	err = m.txn.Edit("outbound", summary, func(tpl map[string]any) error {
+	err = m.txn.EditAt(c.Revision, "outbound", summary, func(tpl map[string]any) error {
 		raw, ok := tpl["outbounds"].([]any)
 		if !ok || idx >= len(raw) {
 			return fmt.Errorf("出站 %d 不存在", idx+1)

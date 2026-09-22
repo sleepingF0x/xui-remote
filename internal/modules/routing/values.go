@@ -8,7 +8,6 @@ import (
 	"github.com/mymmrac/telego"
 
 	"github.com/sleepingF0x/xui-remote/internal/bot"
-	"github.com/sleepingF0x/xui-remote/internal/state"
 	"github.com/sleepingF0x/xui-remote/internal/xraycfg"
 )
 
@@ -100,9 +99,8 @@ func (m *Module) valueAddReply(c *bot.Context, payload, text string) error {
 		return fmt.Errorf("没有新值可加（可能都已经在规则里了）")
 	}
 
-	target := rules[idx].Target()
 	summary := fmt.Sprintf("规则 %d 添加 %s: %s", idx+1, field, strings.Join(added, ", "))
-	err = m.txn.EditWithChecks("routing", summary, checksFor(added, field, target, idx, firstUser(rules[idx])),
+	err = m.txn.EditAt(c.Revision, "routing", summary,
 		func(tpl map[string]any) error {
 			staged, err := xraycfg.Rules(tpl)
 			if err != nil {
@@ -140,7 +138,7 @@ func (m *Module) deleteValue(c *bot.Context, args []string) error {
 
 	removed := vals[vi]
 	summary := fmt.Sprintf("规则 %d 移除 %s: %s", idx+1, field, removed)
-	err = m.txn.Edit("routing", summary, func(tpl map[string]any) error {
+	err = m.txn.EditAt(c.Revision, "routing", summary, func(tpl map[string]any) error {
 		staged, err := xraycfg.Rules(tpl)
 		if err != nil {
 			return err
@@ -176,17 +174,6 @@ func dedupe(existing, candidates []string) []string {
 		out = append(out, v)
 	}
 	return out
-}
-
-func checksFor(values []string, field, target string, idx int, user string) []state.Check {
-	checks := make([]state.Check, 0, maxChecks)
-	for _, v := range values {
-		if len(checks) == maxChecks {
-			break
-		}
-		checks = append(checks, state.Check{Kind: field, Value: v, Expect: target, Index: idx, User: user})
-	}
-	return checks
 }
 
 func toAny(values []string) []any {

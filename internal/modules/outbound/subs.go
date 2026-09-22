@@ -20,7 +20,7 @@ func (m *Module) MatchText(input string) []bot.TextOffer {
 	}
 	return []bot.TextOffer{{
 		Label:    "添加为出站订阅",
-		Callback: bot.CallbackData("out", "subnew"),
+		Callback: bot.CallbackData("out", "subpreview", s),
 	}}
 }
 

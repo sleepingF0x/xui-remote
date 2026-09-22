@@ -4,6 +4,7 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"strings"
@@ -15,16 +16,18 @@ import (
 )
 
 type Bot struct {
-	api        *telego.Bot
-	allowed    map[int64]bool
-	modules    []Module
-	byName     map[string]Module
-	byTitle    map[string]Module
-	commands   map[string]Command
-	promptsMu  sync.Mutex
-	prompts    map[int64]pendingPrompt
-	stash      *stash
-	keyboardKB *telego.ReplyKeyboardMarkup
+	api            *telego.Bot
+	allowed        map[int64]bool
+	modules        []Module
+	byName         map[string]Module
+	byTitle        map[string]Module
+	commands       map[string]Command
+	commandModules map[string]string
+	promptsMu      sync.Mutex
+	prompts        map[int64]pendingPrompt
+	interactions   map[int64]uint64
+	stash          *stash
+	keyboardKB     *telego.ReplyKeyboardMarkup
 }
 
 func New(token string, allowedChatIDs []int64) (*Bot, error) {
@@ -32,19 +35,26 @@ func New(token string, allowedChatIDs []int64) (*Bot, error) {
 	if err != nil {
 		return nil, err
 	}
+	return NewWithAPI(api, allowedChatIDs), nil
+}
+
+// NewWithAPI uses an existing Telegram client, including its transport settings.
+func NewWithAPI(api *telego.Bot, allowedChatIDs []int64) *Bot {
 	allowed := make(map[int64]bool, len(allowedChatIDs))
 	for _, id := range allowedChatIDs {
 		allowed[id] = true
 	}
 	return &Bot{
-		api:      api,
-		allowed:  allowed,
-		byName:   map[string]Module{},
-		byTitle:  map[string]Module{},
-		commands: map[string]Command{},
-		prompts:  map[int64]pendingPrompt{},
-		stash:    newStash(),
-	}, nil
+		api:            api,
+		allowed:        allowed,
+		byName:         map[string]Module{},
+		byTitle:        map[string]Module{},
+		commands:       map[string]Command{},
+		commandModules: map[string]string{},
+		prompts:        map[int64]pendingPrompt{},
+		interactions:   map[int64]uint64{},
+		stash:          newStash(),
+	}
 }
 
 func (b *Bot) Register(modules ...Module) {
@@ -58,9 +68,11 @@ func (b *Bot) Register(modules ...Module) {
 		if c, ok := m.(Commander); ok {
 			for _, cmd := range c.Commands() {
 				b.commands[cmd.Name] = cmd
+				b.commandModules[cmd.Name] = m.Name()
 			}
 		}
 	}
+	b.buildKeyboard()
 }
 
 func (b *Bot) Start(ctx context.Context) error {
@@ -79,15 +91,27 @@ func (b *Bot) Start(ctx context.Context) error {
 	}
 
 	h.HandleMessage(func(_ *th.Context, msg telego.Message) error {
-		go b.safely(func() { b.onMessage(ctx, msg) })
+		go b.HandleUpdate(ctx, telego.Update{Message: &msg})
 		return nil
 	})
 	h.HandleCallbackQuery(func(_ *th.Context, q telego.CallbackQuery) error {
-		go b.safely(func() { b.onCallback(ctx, q) })
+		go b.HandleUpdate(ctx, telego.Update{CallbackQuery: &q})
 		return nil
 	}, th.AnyCallbackQueryWithMessage())
 
 	return h.Start()
+}
+
+// HandleUpdate dispatches one Telegram update through the same authorization
+// and module routing used by the polling loop.
+func (b *Bot) HandleUpdate(ctx context.Context, update telego.Update) {
+	b.safely(func() {
+		if update.Message != nil {
+			b.onMessage(ctx, *update.Message)
+		} else if update.CallbackQuery != nil && update.CallbackQuery.Message != nil {
+			b.onCallback(ctx, *update.CallbackQuery)
+		}
+	})
 }
 
 // safely keeps one bad update from taking the whole bot down; telego's
@@ -132,7 +156,7 @@ func (b *Bot) publishCommands(ctx context.Context) error {
 }
 
 func (b *Bot) context(ctx context.Context, chatID int64, messageID int, module string) *Context {
-	return &Context{ctx: ctx, bot: b.api, b: b, ChatID: chatID, MessageID: messageID, Module: module}
+	return &Context{ctx: ctx, bot: b.api, b: b, ChatID: chatID, MessageID: messageID, Module: module, interaction: interactionNumber(ctx)}
 }
 
 func (b *Bot) onMessage(ctx context.Context, msg telego.Message) {
@@ -148,14 +172,15 @@ func (b *Bot) onMessage(ctx context.Context, msg telego.Message) {
 		return
 	}
 
+	ctx = b.beginInteraction(ctx, chatID)
 	menuModule, isTitle := b.byTitle[text]
 	switch classifyMessage(text, isTitle, b.hasPrompt(chatID)) {
 	case kindCommand:
-		b.clearPrompt(chatID)
+		b.clearPrompt(chatID, interactionNumber(ctx))
 		b.handleCommand(ctx, chatID, text)
 		return
 	case kindMenu:
-		b.clearPrompt(chatID)
+		b.clearPrompt(chatID, interactionNumber(ctx))
 		c := b.context(ctx, chatID, 0, menuModule.Name())
 		if err := menuModule.Menu(c); err != nil {
 			_ = c.Errorf("%v", err)
@@ -166,9 +191,10 @@ func (b *Bot) onMessage(ctx context.Context, msg telego.Message) {
 		return
 	}
 
-	if prompt, ok := b.takePrompt(chatID); ok {
+	if prompt, ok := b.takePrompt(chatID, interactionNumber(ctx)); ok {
 		if m, found := b.byName[prompt.Module]; found {
 			c := b.context(ctx, chatID, 0, m.Name())
+			c.Revision, c.ReturnTo = prompt.Revision, prompt.ReturnTo
 			if p, ok := m.(PayloadPrompter); ok {
 				if err := p.PromptWith(c, prompt.Key, prompt.Payload, text); err != nil {
 					_ = c.Errorf("%v", err)
@@ -223,7 +249,17 @@ func (b *Bot) offerActions(ctx context.Context, chatID int64, text string) {
 			continue
 		}
 		for _, offer := range matcher.MatchText(text) {
-			rows = append(rows, []telego.InlineKeyboardButton{Button(offer.Label, offer.Callback)})
+			parts := strings.SplitN(offer.Callback, ":", 3)
+			if len(parts) < 2 {
+				continue
+			}
+			var args []string
+			if len(parts) == 3 {
+				args = []string{parts[2]}
+			}
+			raw, _ := json.Marshal(callbackRef{Action: parts[1], Args: args, ChatID: chatID})
+			data := CallbackData(parts[0], "ref", b.stash.put(string(raw)))
+			rows = append(rows, []telego.InlineKeyboardButton{Button(offer.Label, data)})
 		}
 	}
 	c := b.context(ctx, chatID, 0, "")
@@ -254,6 +290,7 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 		_ = c.Send("未知命令：/" + escape(name))
 		return
 	}
+	c.Module = b.commandModules[name]
 	if err := cmd.Handler(c, strings.TrimSpace(args)); err != nil {
 		_ = c.Errorf("%v", err)
 	}
@@ -264,11 +301,12 @@ func (b *Bot) onCallback(ctx context.Context, q telego.CallbackQuery) {
 	if !b.allowed[chatID] {
 		return
 	}
+	ctx = b.beginInteraction(ctx, chatID)
 	// Answering clears the client-side spinner even when the work takes a while.
 	_ = b.api.AnswerCallbackQuery(ctx, &telego.AnswerCallbackQueryParams{CallbackQueryID: q.ID})
 	// Tapping any button abandons a typed question — otherwise cancelling out of
 	// a step leaves the prompt armed to eat the next unrelated message.
-	b.clearPrompt(chatID)
+	b.clearPrompt(chatID, interactionNumber(ctx))
 
 	parts := strings.Split(q.Data, ":")
 	if len(parts) < 2 {
@@ -283,6 +321,15 @@ func (b *Bot) onCallback(ctx context.Context, q telego.CallbackQuery) {
 		switch parts[1] {
 		case "cancel":
 			_ = c.Replace("已取消。")
+		case "open":
+			if len(parts) > 2 {
+				if m, ok := b.byName[parts[2]]; ok {
+					c.Module = m.Name()
+					if err := m.Menu(c); err != nil {
+						_ = c.Errorf("%v", err)
+					}
+				}
+			}
 		case "menu":
 			_ = c.Replace(b.menuText())
 		}
@@ -293,7 +340,27 @@ func (b *Bot) onCallback(ctx context.Context, q telego.CallbackQuery) {
 		return
 	}
 	c := b.context(ctx, chatID, messageID, m.Name())
-	if err := m.Callback(c, parts[1], parts[2:]); err != nil {
+	action, args := parts[1], parts[2:]
+	if action == "ref" {
+		var ref callbackRef
+		if len(args) != 1 {
+			_ = c.Expired()
+			return
+		}
+		raw, found := c.Unstash(args[0])
+		if !found || json.Unmarshal([]byte(raw), &ref) != nil || ref.ChatID != chatID {
+			_ = c.Expired()
+			return
+		}
+		action, args = ref.Action, ref.Args
+		c.Revision, c.ReturnTo = ref.Revision, ref.ReturnTo
+	}
+	// Existing modules use colon-separated argument fragments.
+	args = strings.Split(strings.Join(args, ":"), ":")
+	if len(args) == 1 && args[0] == "" {
+		args = nil
+	}
+	if err := m.Callback(c, action, args); err != nil {
 		_ = c.Errorf("%v", err)
 	}
 }
@@ -308,15 +375,22 @@ func (b *Bot) menuText() string {
 	return sb.String()
 }
 
-func (b *Bot) setPrompt(chatID int64, p pendingPrompt) {
+func (b *Bot) setPrompt(chatID int64, generation uint64, p pendingPrompt) bool {
 	b.promptsMu.Lock()
 	defer b.promptsMu.Unlock()
+	if b.interactions[chatID] != generation {
+		return false
+	}
 	b.prompts[chatID] = p
+	return true
 }
 
-func (b *Bot) takePrompt(chatID int64) (pendingPrompt, bool) {
+func (b *Bot) takePrompt(chatID int64, generation uint64) (pendingPrompt, bool) {
 	b.promptsMu.Lock()
 	defer b.promptsMu.Unlock()
+	if b.interactions[chatID] != generation {
+		return pendingPrompt{}, false
+	}
 	p, ok := b.prompts[chatID]
 	delete(b.prompts, chatID)
 	return p, ok
@@ -329,8 +403,26 @@ func (b *Bot) hasPrompt(chatID int64) bool {
 	return ok
 }
 
-func (b *Bot) clearPrompt(chatID int64) {
+func (b *Bot) clearPrompt(chatID int64, generation uint64) {
 	b.promptsMu.Lock()
 	defer b.promptsMu.Unlock()
-	delete(b.prompts, chatID)
+	if b.interactions[chatID] == generation {
+		delete(b.prompts, chatID)
+	}
+}
+
+// A slow callback may finish after a newer menu/cancel action. Only the
+// latest interaction may register or clear a prompt for this chat.
+type interactionKey struct{}
+
+func interactionNumber(ctx context.Context) uint64 {
+	n, _ := ctx.Value(interactionKey{}).(uint64)
+	return n
+}
+func (b *Bot) beginInteraction(ctx context.Context, chatID int64) context.Context {
+	b.promptsMu.Lock()
+	b.interactions[chatID]++
+	n := b.interactions[chatID]
+	b.promptsMu.Unlock()
+	return context.WithValue(ctx, interactionKey{}, n)
 }

@@ -48,3 +48,35 @@ func RawJSON(v any) string {
 	}
 	return string(raw)
 }
+
+type Target struct {
+	Tag      string
+	Balancer bool
+}
+
+func (t Target) Label() string {
+	if t.Balancer {
+		return t.Tag + "（均衡器）"
+	}
+	return t.Tag
+}
+func TargetChoices(tpl map[string]any) []Target {
+	var out []Target
+	for _, ob := range Outbounds(tpl) {
+		if ob.Tag != "" {
+			out = append(out, Target{Tag: ob.Tag})
+		}
+	}
+	for _, tag := range BalancerTags(tpl) {
+		out = append(out, Target{Tag: tag, Balancer: true})
+	}
+	return out
+}
+func (t Target) Apply(r Rule) { r.SetTarget(t.Tag, t.Balancer) }
+
+func (t Target) Matches(r Rule) bool {
+	if t.Balancer {
+		return r.Raw["balancerTag"] == t.Tag && r.Raw["outboundTag"] == nil
+	}
+	return r.Raw["outboundTag"] == t.Tag && r.Raw["balancerTag"] == nil
+}

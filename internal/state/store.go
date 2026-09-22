@@ -2,6 +2,7 @@
 package state
 
 import (
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,18 +17,19 @@ import (
 // template as it looked when staging opened, so Apply can detect a concurrent
 // edit made in the web panel instead of silently overwriting it.
 type Staging struct {
-	Base    json.RawMessage `json:"base"`
-	Draft   json.RawMessage `json:"draft"`
-	Entries []StagedEntry   `json:"entries"`
+	RuleOrigins []int           `json:"rule_origins,omitempty"`
+	Revision    string          `json:"revision,omitempty"`
+	Base        json.RawMessage `json:"base"`
+	Draft       json.RawMessage `json:"draft"`
+	Entries     []StagedEntry   `json:"entries"`
 }
 
 type StagedEntry struct {
 	At      time.Time `json:"at"`
 	Module  string    `json:"module"`
 	Summary string    `json:"summary"`
-	// Checks are assertions to run after the apply lands. routeTest only
-	// reflects the running core, so this is the earliest a change can be
-	// verified at all.
+	// Checks is retained for decoding older drafts. New verification plans
+	// are derived from Base and Draft after apply.
 	Checks []Check `json:"checks,omitempty"`
 }
 
@@ -42,7 +44,13 @@ type Check struct {
 	User string `json:"user,omitempty"`
 	// Index is where the rule was placed, so a failure can name the earlier
 	// rule that is shadowing it.
-	Index int `json:"index"`
+	Index    int    `json:"index"`
+	Balancer bool   `json:"balancer,omitempty"`
+	Skip     string `json:"skip,omitempty"`
+	Port     int    `json:"port,omitempty"`
+	Network  string `json:"network,omitempty"`
+	Inbound  string `json:"inbound,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
 }
 
 type Snapshot struct {
@@ -109,7 +117,7 @@ func (s *Store) SaveSnapshot(summary string, template json.RawMessage) (*Snapsho
 	defer s.mu.Unlock()
 	now := time.Now()
 	snap := &Snapshot{
-		ID:       now.Format("20060102-150405"),
+		ID:       now.Format("20060102-150405") + "-" + rand.Text()[:8],
 		At:       now,
 		Summary:  summary,
 		Template: template,

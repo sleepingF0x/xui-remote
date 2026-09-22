@@ -5,6 +5,8 @@ package configtxn
 import (
 	"errors"
 	"fmt"
+	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -12,7 +14,6 @@ import (
 	"github.com/mymmrac/telego"
 
 	"github.com/sleepingF0x/xui-remote/internal/bot"
-	"github.com/sleepingF0x/xui-remote/internal/state"
 	"github.com/sleepingF0x/xui-remote/internal/txn"
 	"github.com/sleepingF0x/xui-remote/internal/verify"
 	"github.com/sleepingF0x/xui-remote/internal/xraycfg"
@@ -40,6 +41,12 @@ func (m *Module) Menu(c *bot.Context) error { return m.diff(c, false) }
 
 func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 	switch action {
+	case "apply", "applygo", "applyforce", "discard", "discardgo", "rb", "rbgo":
+		if err := m.txn.CheckVersion(c.Revision); err != nil {
+			return c.Expired()
+		}
+	}
+	switch action {
 	case "diff":
 		return m.diff(c, true)
 	case "apply":
@@ -51,7 +58,7 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 	case "discard":
 		return m.confirmDiscard(c)
 	case "discardgo":
-		if err := m.txn.Discard(); err != nil {
+		if err := m.txn.DiscardAt(c.Revision); err != nil {
 			return err
 		}
 		return c.Replace("已丢弃全部暂存改动。")
@@ -66,25 +73,32 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 }
 
 func (m *Module) diff(c *bot.Context, replace bool) error {
-	st, err := m.txn.Pending()
-	if errors.Is(err, txn.ErrNothingStaged) {
+	view, viewErr := m.txn.View()
+	if viewErr != nil {
+		return viewErr
+	}
+	c.Revision = view.Version
+
+	st := view.Staging
+	if st == nil {
 		kb := bot.Keyboard(bot.InlineRow(
 			bot.Button("配置快照", c.CallbackData("snaps")),
 			bot.Home(),
 		))
 		return send(c, replace, "<b>⚙️ 配置</b>\n\n暂存区是空的，当前配置即线上配置。", kb)
 	}
+	changes, err := xraycfg.Changes(st.Base, st.Draft, st.RuleOrigins)
 	if err != nil {
 		return err
 	}
-
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("<b>⚙️ 暂存区（%d 项）</b>\n\n", len(st.Entries)))
-	for i, e := range st.Entries {
-		sb.WriteString(fmt.Sprintf("%d. %s\n   <i>%s · %s</i>\n",
-			i+1, bot.Escape(e.Summary), bot.Escape(e.Module), e.At.Format("01-02 15:04")))
+	sb.WriteString(fmt.Sprintf("<b>⚙️ 最终变化（%d 项）</b>\n\n", len(changes)))
+	if len(changes) == 0 {
+		sb.WriteString("没有实际变化，无需提交。可丢弃暂存记录。")
+	} else {
+		sb.WriteString(describeChanges(changes))
+		sb.WriteString("\n<i>草稿尚未生效。提交会重启 Xray，断开当前连接。</i>")
 	}
-	sb.WriteString("\n<i>提交会重启 Xray，断开当前连接。</i>")
 
 	kb := bot.Keyboard(
 		bot.InlineRow(bot.Button("✅ 提交并重启", c.CallbackData("apply"))),
@@ -94,27 +108,40 @@ func (m *Module) diff(c *bot.Context, replace bool) error {
 		),
 		bot.InlineRow(bot.Home()),
 	)
+	if len(changes) == 0 {
+		kb.InlineKeyboard = kb.InlineKeyboard[1:]
+	}
 	return send(c, replace, sb.String(), kb)
 }
 
 func (m *Module) confirmApply(c *bot.Context, replace bool) error {
-	st, err := m.txn.Pending()
-	if errors.Is(err, txn.ErrNothingStaged) {
+	view, viewErr := m.txn.View()
+	if viewErr != nil {
+		return viewErr
+	}
+	c.Revision = view.Version
+
+	st := view.Staging
+	if st == nil {
 		return send(c, replace, "暂存区是空的，没有要提交的改动。",
 			bot.Keyboard(bot.InlineRow(bot.Home())))
 	}
+	changes, err := xraycfg.Changes(st.Base, st.Draft, st.RuleOrigins)
 	if err != nil {
 		return err
 	}
-	body := fmt.Sprintf("确认提交 <b>%d</b> 项改动？\n\n<b>Xray 会重启，当前所有连接断开。</b>", len(st.Entries))
+	if len(changes) == 0 {
+		return send(c, replace, txn.ErrNoChanges.Error(), bot.Keyboard(bot.InlineRow(bot.Button("返回暂存区", "config:diff"))))
+	}
+	body := fmt.Sprintf("确认提交 <b>%d</b> 项改动？\n\n<b>Xray 会重启，当前所有连接断开。</b>", len(changes))
 	return send(c, replace, body, bot.Keyboard(
 		bot.InlineRow(bot.Button("确认提交", c.CallbackData("applygo"))),
-		bot.InlineRow(bot.Button("取消", "core:cancel")),
+		bot.InlineRow(bot.Button("取消", "config:diff")),
 	))
 }
 
 func (m *Module) apply(c *bot.Context, force bool) error {
-	res, err := m.txn.Apply(force)
+	res, err := m.txn.ApplyAt(c.Revision, force)
 	if errors.Is(err, txn.ErrConflict) {
 		// The live template moved under us — almost always someone editing in
 		// the web panel. Overwriting would silently drop their change.
@@ -131,16 +158,15 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 		return fmt.Errorf("提交失败: %w", err)
 	}
 
+	c.Revision = res.Version
 	var sb strings.Builder
 	sb.WriteString("✅ <b>已提交，Xray 已重启</b>\n\n")
-	for _, e := range res.Applied {
-		sb.WriteString("• " + bot.Escape(e.Summary) + "\n")
-	}
+	changes, _ := xraycfg.Changes(res.Base, res.Draft, res.RuleOrigins)
+	sb.WriteString(describeChanges(changes))
 	sb.WriteString(fmt.Sprintf("\n快照 <code>%s</code> 已保存，可回滚。", res.Snapshot.ID))
-
-	var checks []state.Check
-	for _, e := range res.Applied {
-		checks = append(checks, e.Checks...)
+	checks, planErr := verify.Plan(res.Base, res.Draft, res.RuleOrigins)
+	if planErr != nil {
+		return c.Replace(sb.String() + "\n验证计划无法生成：" + bot.Escape(planErr.Error()))
 	}
 	if len(checks) == 0 {
 		return c.Replace(sb.String(), bot.Keyboard(
@@ -155,7 +181,13 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 	if err := c.Replace(sb.String()); err != nil {
 		return err
 	}
-	return m.report(c, m.verifier.Run(checks), res.Snapshot.ID)
+	results := m.verifier.Run(checks)
+	if err := m.txn.CheckVersion(res.Version); err != nil {
+		for i := range results {
+			results[i].Skipped = "配置已再次变化，取样不能归属本次提交，请重新测试"
+		}
+	}
+	return m.report(c, results, res.Snapshot.ID)
 }
 
 // report renders verification results and, for a rule that did not take
@@ -163,7 +195,7 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID string) error {
 	var sb strings.Builder
 	passed, failed := 0, 0
-	shadowed := false
+
 	for _, r := range results {
 		switch {
 		case !r.Verified():
@@ -177,50 +209,28 @@ func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID stri
 			sb.WriteString(fmt.Sprintf("❌ %s\n    取样 %s%s → <b>%s</b>，期望 <b>%s</b>\n",
 				bot.Escape(r.Source), bot.Escape(r.Target), asUser(r),
 				bot.Escape(r.Actual), bot.Escape(r.Expect)))
-			if idx, ok := m.shadowedBy(r); ok {
-				shadowed = true
-				sb.WriteString(fmt.Sprintf("    <i>可能被第 %d 条规则遮蔽</i>\n", idx+1))
-			}
+
 		}
 	}
 
-	head := fmt.Sprintf("<b>验证 %d/%d 通过</b>\n\n", passed, passed+failed)
+	head := fmt.Sprintf("<b>验证 %d/%d 通过 · %d 项跳过</b>\n<i>取样结果仅代表本次提交，不能代表所有流量。</i>\n\n", passed, passed+failed, len(results)-passed-failed)
 	if failed == 0 {
 		return c.Send(head+sb.String(), bot.Keyboard(bot.InlineRow(bot.Home())))
 	}
 
+	routeContext := *c
+	routeContext.Module = "route"
+	routeContext.ReturnTo = ""
 	var rows [][]telego.InlineKeyboardButton
 	if idx, ok := failingRuleIndex(results); ok {
 		rows = append(rows, bot.InlineRow(
-			bot.Button(fmt.Sprintf("调整第 %d 条的位置", idx+1), bot.CallbackData("route", "moveto", strconv.Itoa(idx)))))
+			bot.Button(fmt.Sprintf("调整第 %d 条的位置", idx+1), routeContext.CallbackData("moveto", strconv.Itoa(idx)))))
 	}
 	rows = append(rows,
 		bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", snapshotID))),
 		bot.InlineRow(bot.Home()),
 	)
-	return c.Send("⚠️ "+head+sb.String()+"\n<i>"+failureNote(shadowed)+"</i>", bot.Keyboard(rows...))
-}
-
-// shadowedBy looks for an earlier rule pointing at the outbound the traffic
-// actually took — the usual explanation for a rule that never fires.
-func (m *Module) shadowedBy(r verify.Result) (int, bool) {
-	tpl, err := m.txn.Inspect()
-	if err != nil {
-		return 0, false
-	}
-	rules, err := xraycfg.Rules(tpl)
-	if err != nil {
-		return 0, false
-	}
-	for _, rule := range rules {
-		if rule.Index >= r.Index {
-			break
-		}
-		if rule.Target() == r.Actual {
-			return rule.Index, true
-		}
-	}
-	return 0, false
+	return c.Send("⚠️ "+head+sb.String()+"\n<i>"+failureNote(false)+"</i>", bot.Keyboard(rows...))
 }
 
 func failingRuleIndex(results []verify.Result) (int, bool) {
@@ -240,6 +250,12 @@ func (m *Module) confirmDiscard(c *bot.Context) error {
 }
 
 func (m *Module) snapshots(c *bot.Context, replace bool) error {
+	view, viewErr := m.txn.View()
+	if viewErr != nil {
+		return viewErr
+	}
+	c.Revision = view.Version
+
 	snaps, err := m.txn.Snapshots()
 	if err != nil {
 		return err
@@ -281,7 +297,7 @@ func (m *Module) rollback(c *bot.Context, args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	if err := m.txn.Rollback(args[0]); err != nil {
+	if err := m.txn.RollbackAt(c.Revision, args[0]); err != nil {
 		return fmt.Errorf("回滚失败: %w", err)
 	}
 	return c.Replace(
@@ -340,4 +356,47 @@ func truncate(s string, max int) string {
 		return s
 	}
 	return string(runes[:max]) + "…"
+}
+
+func describeChanges(changes []xraycfg.Change) string {
+	var sb strings.Builder
+	for _, ch := range changes {
+		switch {
+		case ch.Before == nil:
+			sb.WriteString(fmt.Sprintf("<b>新增%s · 第 %d 位</b>\n%s\n", ch.Kind, ch.AfterIndex+1, bot.Code(xraycfg.RawJSON(ch.After))))
+		case ch.After == nil:
+			sb.WriteString(fmt.Sprintf("<b>删除%s · 原第 %d 位</b>\n%s\n", ch.Kind, ch.BeforeIndex+1, bot.Code(xraycfg.RawJSON(ch.Before))))
+		default:
+			label := "修改"
+			if ch.Moved {
+				label = "顺序调整 / 修改"
+			}
+			sb.WriteString(fmt.Sprintf("<b>%s%s · 第 %d → %d 位</b>\n", label, ch.Kind, ch.BeforeIndex+1, ch.AfterIndex+1))
+			if ch.Kind == "规则" {
+				r := xraycfg.Rule{Raw: ch.After}
+				sb.WriteString(bot.Escape(r.Summary()+" → "+r.Target()) + "\n")
+			}
+			keys := map[string]bool{}
+			for k := range ch.Before {
+				keys[k] = true
+			}
+			for k := range ch.After {
+				keys[k] = true
+			}
+			names := make([]string, 0, len(keys))
+			for k := range keys {
+				names = append(names, k)
+			}
+			sort.Strings(names)
+			for _, k := range names {
+				if reflect.DeepEqual(ch.Before[k], ch.After[k]) {
+					continue
+				}
+				before, after := xraycfg.RawJSON(ch.Before[k]), xraycfg.RawJSON(ch.After[k])
+				sb.WriteString(bot.Escape(k) + ": " + bot.Code(before) + " → " + bot.Code(after) + "\n")
+			}
+			sb.WriteString("\n")
+		}
+	}
+	return sb.String()
 }

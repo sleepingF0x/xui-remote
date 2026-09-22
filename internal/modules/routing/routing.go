@@ -5,6 +5,7 @@ package routing
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -35,12 +36,21 @@ func (m *Module) Commands() []bot.Command {
 func (m *Module) Menu(c *bot.Context) error { return m.list(c, false) }
 
 func (m *Module) Callback(c *bot.Context, action string, args []string) error {
+	if action != "list" && action != "clearfilter" {
+		if err := m.txn.CheckVersion(c.Revision); err != nil {
+			return c.Expired()
+		}
+	}
 	switch action {
 	case "list":
 		return m.listPage(c, args, true)
+	case "clearfilter":
+		return m.render(c, 0, "", true)
+	case "json":
+		return m.raw(c, atoi(args, 0))
 	case "filter":
 		c.Await("filter")
-		return c.Replace("发送出站名或域名片段筛选，发送 <code>-</code> 清除筛选：")
+		return c.Replace("发送出站名或域名片段筛选，发送 <code>-</code> 清除筛选：", bot.Keyboard(bot.InlineRow(c.ReturnButton("取消", "route:list"))))
 	case "view":
 		return m.view(c, atoi(args, 0))
 	case "del":
@@ -77,10 +87,8 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 	return nil
 }
 
-// pageSize keeps one screenful readable; a per-rule button grid was dropped
-// because the number in it carries no information — you have to read the list,
-// find the line, then hunt the same number in the grid.
-const pageSize = 12
+// Eight descriptive buttons fit a phone screen without a numeric input step.
+const pageSize = 8
 
 func (m *Module) list(c *bot.Context, replace bool) error {
 	return m.render(c, 0, "", replace)
@@ -101,11 +109,12 @@ func (m *Module) listPage(c *bot.Context, args []string, replace bool) error {
 }
 
 func (m *Module) render(c *bot.Context, page int, filter string, replace bool) error {
-	tpl, err := m.txn.Inspect()
+	view, err := m.txn.View()
 	if err != nil {
 		return err
 	}
-	rules, err := xraycfg.Rules(tpl)
+	c.Revision = view.Version
+	rules, err := xraycfg.Rules(view.Template)
 	if err != nil {
 		return err
 	}
@@ -148,11 +157,19 @@ func (m *Module) render(c *bot.Context, page int, filter string, replace bool) e
 		sb.WriteString(fmt.Sprintf("\n第 %d / %d 页\n", page+1, pages))
 	}
 	if len(shown) > 0 {
-		sb.WriteString("\n<i>发送序号查看或编辑某条</i>")
+		sb.WriteString("\n<i>点击规则查看详情</i>")
 	}
 
-	c.Await("select")
-	return send(c, replace, sb.String(), m.listKeyboard(c, page, pages, filter))
+	token := c.Stash(filter)
+	c.ReturnTo = bot.CallbackData("route", "list", strconv.Itoa(page), token)
+	kb := m.listKeyboard(c, page, pages, filter)
+	var items [][]telego.InlineKeyboardButton
+	for _, r := range shown[start:end] {
+		label := fmt.Sprintf("%d. %s → %s", r.Index+1, truncateText(r.Summary(), 34), truncateText(r.Target(), 20))
+		items = append(items, bot.InlineRow(bot.Button(label, c.CallbackData("view", strconv.Itoa(r.Index)))))
+	}
+	kb.InlineKeyboard = append(items, kb.InlineKeyboard...)
+	return send(c, replace, sb.String(), kb)
 }
 
 func ruleLine(r xraycfg.Rule, floor int, draft bool) string {
@@ -226,14 +243,19 @@ func (m *Module) listKeyboard(c *bot.Context, page, pages int, filter string) *t
 		}
 		rows = append(rows, nav)
 	}
+	filterAction := "filter"
 	filterLabel := "🔍 筛选"
 	if filter != "" {
 		filterLabel = "🔍 清除筛选"
+		filterAction = "clearfilter"
 	}
 	rows = append(rows, []telego.InlineKeyboardButton{
 		bot.Button("+ 新增规则", c.CallbackData("new")),
-		bot.Button(filterLabel, c.CallbackData("filter")),
+		bot.Button(filterLabel, c.CallbackData(filterAction)),
 	}, bot.InlineRow(bot.Home()))
+	if m.txn.PendingCount() > 0 {
+		rows = append(rows, bot.InlineRow(bot.Button("查看待提交改动", "config:diff")))
+	}
 	return bot.Keyboard(rows...)
 }
 
@@ -253,8 +275,15 @@ func (m *Module) view(c *bot.Context, idx int) error {
 		return fmt.Errorf("规则 %d 不存在", idx+1)
 	}
 	r := rules[idx]
-	body := fmt.Sprintf("<b>规则 %d</b> → <b>%s</b>\n\n%s",
-		idx+1, bot.Escape(r.Target()), bot.Code(xraycfg.RawJSON(r.Raw)))
+	status := "线上配置"
+	if m.txn.PendingCount() > 0 {
+		status = "草稿 · 尚未提交，路由测试仍使用线上配置"
+	}
+	body := fmt.Sprintf("<b>规则 %d / %d</b>\n%s\n\n<b>目标</b>  %s\n<b>匹配条件</b>\n%s",
+		idx+1, len(rules), status, bot.Escape(r.Target()), ruleConditions(r))
+	if r.IsCatchAll() {
+		body += "\n⚠️ 匹配所有流量，后面的规则不会生效。"
+	}
 
 	i := strconv.Itoa(idx)
 	kb := bot.Keyboard(
@@ -267,8 +296,8 @@ func (m *Module) view(c *bot.Context, idx int) error {
 			bot.Button("改出站", c.CallbackData("chg", i)),
 			bot.Button("改匹配值", c.CallbackData("vals", i)),
 		),
-		bot.InlineRow(bot.Button("删除", c.CallbackData("del", i))),
-		bot.InlineRow(bot.Button("← 返回列表", c.CallbackData("list"))),
+		bot.InlineRow(bot.Button("原始 JSON", c.CallbackData("json", i)), bot.Button("删除", c.CallbackData("del", i))),
+		bot.InlineRow(c.ReturnButton("← 返回列表", "route:list")),
 	)
 	return c.Replace(body, kb)
 }
@@ -300,7 +329,7 @@ func (m *Module) deleteRule(c *bot.Context, idx int) error {
 	}
 	summary := fmt.Sprintf("删除规则 %d (%s → %s)", idx+1, current[idx].Summary(), current[idx].Target())
 
-	err = m.txn.Edit("routing", summary, func(tpl map[string]any) error {
+	err = m.txn.EditAt(c.Revision, "routing", summary, func(tpl map[string]any) error {
 		rules, err := xraycfg.Rules(tpl)
 		if err != nil {
 			return err
@@ -329,14 +358,14 @@ func (m *Module) move(c *bot.Context, from, to int) error {
 		return c.Replace(
 			fmt.Sprintf("不能再往上了。\n\n<i>前 %d 条是基础设施规则，顺序承重 —— "+
 				"业务规则排到它们上面会吃掉 api 入站的流量，面板的统计和路由测试都会失效。</i>", floor),
-			bot.Keyboard(bot.InlineRow(bot.Button("← 返回列表", c.CallbackData("list")))))
+			bot.Keyboard(bot.InlineRow(c.ReturnButton("← 返回列表", "route:list"))))
 	}
 	if to < 0 {
 		return c.Replace("已经是第一条了。", bot.Keyboard(
-			bot.InlineRow(bot.Button("← 返回列表", c.CallbackData("list")))))
+			bot.InlineRow(c.ReturnButton("← 返回列表", "route:list"))))
 	}
 	summary := fmt.Sprintf("规则 %d 移到第 %d 位", from+1, to+1)
-	err = m.txn.Edit("routing", summary, func(tpl map[string]any) error {
+	err = m.txn.EditAt(c.Revision, "routing", summary, func(tpl map[string]any) error {
 		rules, err := xraycfg.Rules(tpl)
 		if err != nil {
 			return err
@@ -354,6 +383,9 @@ func (m *Module) move(c *bot.Context, from, to int) error {
 	if err != nil {
 		return err
 	}
+	if c.ReturnTo != "" {
+		return m.listPage(c, strings.Split(c.ReturnTo, ":")[2:], true)
+	}
 	return m.list(c, true)
 }
 
@@ -369,6 +401,40 @@ func (m *Module) staged(c *bot.Context, summary string) error {
 	return c.Replace("✅ 已暂存："+bot.Escape(summary)+"\n\n<i>还未生效，到「⚙️ 配置」提交。</i>",
 		bot.Keyboard(
 			bot.InlineRow(bot.Button("查看暂存区", "config:diff")),
-			bot.InlineRow(bot.Button("← 返回列表", c.CallbackData("list"))),
+			bot.InlineRow(c.ReturnButton("← 返回列表", "route:list")),
 		))
+}
+
+func ruleConditions(r xraycfg.Rule) string {
+	names := map[string]string{"domain": "域名", "ip": "IP", "user": "用户", "inboundTag": "入站", "network": "网络", "port": "目标端口", "sourcePort": "来源端口", "source": "来源 IP", "protocol": "协议"}
+	keys := make([]string, 0, len(r.Raw))
+	for k := range r.Raw {
+		if k != "type" && k != "outboundTag" && k != "balancerTag" {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var sb strings.Builder
+	for _, k := range keys {
+		label := names[k]
+		if label == "" {
+			label = k
+		}
+		value := strings.ReplaceAll(xraycfg.RawJSON(r.Raw[k]), "\n", " ")
+		sb.WriteString(bot.Escape(label) + ": " + bot.Code(truncateText(value, 240)) + "\n")
+	}
+	if len(keys) == 0 {
+		return "全部流量"
+	}
+	return sb.String()
+}
+func (m *Module) raw(c *bot.Context, idx int) error {
+	rules, err := m.rules()
+	if err != nil {
+		return err
+	}
+	if idx < 0 || idx >= len(rules) {
+		return c.Expired()
+	}
+	return c.Replace(bot.Code(xraycfg.RawJSON(rules[idx].Raw)), bot.Keyboard(bot.InlineRow(bot.Back(c, "view", strconv.Itoa(idx)))))
 }

@@ -54,9 +54,10 @@ type PayloadPrompter interface {
 // AwaitReply registers that the next plain message from this chat belongs to
 // the named module and prompt key.
 type pendingPrompt struct {
-	Module  string
-	Key     string
-	Payload string
+	Module             string
+	Key                string
+	Payload            string
+	Revision, ReturnTo string
 }
 
 // InlineRow is a small helper so modules do not each re-import telego's

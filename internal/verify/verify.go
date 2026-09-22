@@ -7,6 +7,7 @@ package verify
 import (
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 
 	"github.com/sleepingF0x/xui-remote/internal/panel"
@@ -59,6 +60,10 @@ func (v *Verifier) Run(checks []state.Check) []Result {
 func (v *Verifier) one(ch state.Check) Result {
 	res := Result{Source: ch.Value, Expect: ch.Expect, Index: ch.Index, User: ch.User}
 
+	if ch.Skip != "" {
+		res.Skipped = ch.Skip
+		return res
+	}
 	target, reason := v.resolve(ch)
 	if target == "" {
 		res.Skipped = reason
@@ -66,7 +71,13 @@ func (v *Verifier) one(ch state.Check) Result {
 	}
 	res.Target = target
 
-	req := panel.RouteTestRequest{Port: 443, Network: "tcp", Email: ch.User}
+	req := panel.RouteTestRequest{Port: ch.Port, Network: ch.Network, Email: ch.User, InboundTag: ch.Inbound, Protocol: ch.Protocol}
+	if req.Port == 0 {
+		req.Port = 443
+	}
+	if req.Network == "" {
+		req.Network = "tcp"
+	}
 	if ch.Kind == "ip" {
 		req.IP = target
 	} else {
@@ -83,6 +94,14 @@ func (v *Verifier) one(ch state.Check) Result {
 	}
 	res.Actual = got.OutboundTag
 	res.OK = got.OutboundTag == ch.Expect
+	if ch.Balancer {
+		if len(got.GroupTags) == 0 {
+			res.Skipped = "面板未返回均衡器路径，无法验证目标类型"
+			return res
+		}
+		res.OK = slices.Contains(got.GroupTags, ch.Expect)
+		res.Actual = strings.Join(got.GroupTags, " → ") + " → " + got.OutboundTag
+	}
 	return res
 }
 
