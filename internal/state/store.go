@@ -75,7 +75,55 @@ func NewStore(dir string, maxSnapshots int) (*Store, error) {
 	return &Store{dir: dir, maxSnapshots: maxSnapshots}, nil
 }
 
+// Confirmation is an applied change still on probation: unless the operator
+// keeps it before Deadline, the bot restores Snapshot. It is persisted so a bot
+// restart inside the window cannot quietly make a bad change permanent.
+type Confirmation struct {
+	SnapshotID string `json:"snapshot_id"`
+	// Applied is the template that went live; an auto-rollback only fires
+	// while the panel still holds exactly this, so it never undoes later work.
+	Applied  json.RawMessage `json:"applied"`
+	Deadline time.Time       `json:"deadline"`
+	ChatID   int64           `json:"chat_id"`
+}
+
+var ErrNoConfirmation = errors.New("no change awaiting confirmation")
+
 func (s *Store) stagingPath() string { return filepath.Join(s.dir, "staging.json") }
+func (s *Store) confirmPath() string { return filepath.Join(s.dir, "confirm.json") }
+
+func (s *Store) LoadConfirmation() (*Confirmation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	raw, err := os.ReadFile(s.confirmPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, ErrNoConfirmation
+	}
+	if err != nil {
+		return nil, err
+	}
+	var c Confirmation
+	if err := json.Unmarshal(raw, &c); err != nil {
+		return nil, err
+	}
+	return &c, nil
+}
+
+func (s *Store) SaveConfirmation(c *Confirmation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return writeAtomic(s.confirmPath(), c)
+}
+
+func (s *Store) ClearConfirmation() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := os.Remove(s.confirmPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
 
 func (s *Store) LoadStaging() (*Staging, error) {
 	s.mu.Lock()
@@ -170,6 +218,16 @@ func (s *Store) GetSnapshot(id string) (*Snapshot, error) {
 		return nil, err
 	}
 	return &snap, nil
+}
+
+func (s *Store) DeleteSnapshot(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	err := os.Remove(filepath.Join(s.dir, "snapshots", id+".json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 func (s *Store) trimLocked() error {

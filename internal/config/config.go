@@ -14,7 +14,17 @@ type Config struct {
 	Panel    Panel    `yaml:"panel"`
 	Telegram Telegram `yaml:"telegram"`
 	State    State    `yaml:"state"`
+	Apply    Apply    `yaml:"apply"`
 }
+
+type Apply struct {
+	// ConfirmMinutes is the probation window after each apply: a change not
+	// kept within it is rolled back, so a change that cuts the operator off
+	// undoes itself. 0 disables it; unset means DefaultConfirmMinutes.
+	ConfirmMinutes *int `yaml:"confirm_minutes"`
+}
+
+const DefaultConfirmMinutes = 5
 
 type Panel struct {
 	// BaseURL must end at the API group, e.g. https://host/panel/panel/api/
@@ -70,6 +80,10 @@ func (c *Config) applyDefaults() {
 			c.State.Dir = ".xui-remote"
 		}
 	}
+	if c.Apply.ConfirmMinutes == nil {
+		n := DefaultConfirmMinutes
+		c.Apply.ConfirmMinutes = &n
+	}
 	if c.State.MaxSnapshots <= 0 {
 		c.State.MaxSnapshots = 20
 	}
@@ -88,6 +102,9 @@ func (c *Config) validate() error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing required settings: %s", strings.Join(missing, ", "))
+	}
+	if *c.Apply.ConfirmMinutes < 0 {
+		return fmt.Errorf("apply.confirm_minutes must be 0 (off) or a positive number of minutes")
 	}
 	// An empty allowlist would accept commands from any chat that finds the bot.
 	if len(c.Telegram.AllowedChatIDs) == 0 {

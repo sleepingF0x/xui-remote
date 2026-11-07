@@ -64,7 +64,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("状态目录不可用: %v", err)
 	}
-	manager := txn.New(api, store)
+	manager := txn.New(api, store,
+		txn.WithConfirmWindow(time.Duration(*cfg.Apply.ConfirmMinutes)*time.Minute))
 
 	b, err := bot.New(cfg.Telegram.Token, cfg.Telegram.AllowedChatIDs)
 	if err != nil {

@@ -1,6 +1,10 @@
 package bot
 
-import "github.com/mymmrac/telego"
+import (
+	"context"
+
+	"github.com/mymmrac/telego"
+)
 
 // Module is one feature area. Registering is the only wiring: the bot derives
 // its menu button, its commands and its callback namespace from this.
@@ -64,4 +68,11 @@ type pendingPrompt struct {
 // keyboard builders for the common one-button-per-row case.
 func InlineRow(buttons ...telego.InlineKeyboardButton) []telego.InlineKeyboardButton {
 	return buttons
+}
+
+// Runner is implemented by modules with work that is not a reply to anyone,
+// such as a deadline expiring. Run is started once with the bot and must
+// return when ctx is done; open builds a Context for posting to a chat.
+type Runner interface {
+	Run(ctx context.Context, open func(chatID int64) *Context)
 }

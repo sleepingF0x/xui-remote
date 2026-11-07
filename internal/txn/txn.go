@@ -21,14 +21,20 @@ import (
 )
 
 type Manager struct {
-	panel *panel.Client
-	store *state.Store
-	mu    sync.Mutex
-	epoch atomic.Uint64
+	panel         *panel.Client
+	store         *state.Store
+	mu            sync.Mutex
+	epoch         atomic.Uint64
+	settle        time.Duration
+	confirmWindow time.Duration
 }
 
-func New(p *panel.Client, s *state.Store) *Manager {
-	return &Manager{panel: p, store: s}
+func New(p *panel.Client, s *state.Store, opts ...Option) *Manager {
+	m := &Manager{panel: p, store: s, settle: defaultSettle}
+	for _, o := range opts {
+		o(m)
+	}
+	return m
 }
 
 // ErrConflict means the live template changed since staging opened — applying
@@ -232,18 +238,32 @@ type ApplyResult struct {
 	Base        json.RawMessage
 	Draft       json.RawMessage
 	Version     string
+	// Health is the core's state once the write settled. Checked is false
+	// when Xray was deliberately stopped, so nothing could be observed.
+	Health Health
+	// AlreadyLive means an earlier apply whose reply was lost had in fact
+	// landed; this one only recorded it instead of writing again.
+	AlreadyLive bool
+	// ConfirmBy is when the change is rolled back unless kept; zero when no
+	// confirmation window was armed.
+	ConfirmBy time.Time
 }
 
 // Apply writes the draft to the panel after snapshotting what was live, so a
-// bad change is one Rollback away.
-func (m *Manager) Apply(force bool) (*ApplyResult, error) { return m.apply("", force) }
-func (m *Manager) ApplyAt(version string, force bool) (*ApplyResult, error) {
+// bad change is one Rollback away. A change the core cannot run is written
+// back out immediately and stays staged; see ApplyError.
+func (m *Manager) Apply(force bool) (*ApplyResult, error) { return m.apply("", force, 0) }
+
+// ApplyAt is Apply bound to the version the operator reviewed. chatID is
+// where an expired confirmation window is reported.
+func (m *Manager) ApplyAt(version string, force bool, chatID int64) (*ApplyResult, error) {
 	if version == "" {
 		return nil, ErrStale
 	}
-	return m.apply(version, force)
+	return m.apply(version, force, chatID)
 }
-func (m *Manager) apply(version string, force bool) (*ApplyResult, error) {
+
+func (m *Manager) apply(version string, force bool, chatID int64) (*ApplyResult, error) {
 	if !m.mu.TryLock() {
 		return nil, ErrBusy
 	}
@@ -264,69 +284,138 @@ func (m *Manager) apply(version string, force bool) (*ApplyResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The panel already holds the draft: an earlier apply landed but its reply
+	// never arrived. Calling that a web-panel conflict would be wrong, and
+	// writing it again would restart Xray for nothing.
+	if sameJSON(live.Template, st.Draft) {
+		return m.adoptLanded(st, chatID)
+	}
 	if !force && !sameJSON(live.Template, st.Base) {
 		return nil, ErrConflict
 	}
+	// Whether the core is meant to run decides what a healthy result looks
+	// like: the panel leaves a manually stopped core stopped.
+	before, err := m.panel.Status()
+	if err != nil {
+		return nil, fmt.Errorf("读取 Xray 状态失败，未提交: %w", err)
+	}
+	wantRunning := before.Xray.State != stateStopped
 
-	summary := summarize(st.Entries)
-	snap, err := m.store.SaveSnapshot(summary, live.Template)
+	snap, err := m.store.SaveSnapshot(summarize(st.Entries), live.Template)
 	if err != nil {
 		return nil, err
 	}
-	if err := m.panel.UpdateXraySetting(&panel.XraySetting{
+	if writeErr := m.panel.UpdateXraySetting(&panel.XraySetting{
 		Template:        st.Draft,
 		OutboundTestURL: live.OutboundTestURL,
-	}); err != nil {
-		return nil, err
+	}); writeErr != nil {
+		// The panel stores the template before reconciling the core, so an
+		// error does not mean nothing changed. Read back what it now holds.
+		after, readErr := m.panel.GetXraySetting()
+		switch {
+		case readErr != nil:
+			return nil, fmt.Errorf("提交结果未知（%v），读取面板配置也失败（%v）。稍后打开暂存区确认", writeErr, readErr)
+		case sameJSON(after.Template, live.Template):
+			m.dropSnapshot(snap.ID)
+			return nil, writeErr
+		case !sameJSON(after.Template, st.Draft):
+			return nil, fmt.Errorf("提交失败（%v），且面板配置已被其他改动替换", writeErr)
+		}
+		return nil, m.undo(snap, live, wantRunning, writeErr)
+	}
+
+	var health Health
+	if wantRunning {
+		health = m.ensureRunning()
+		if health.Failed() {
+			return nil, m.undo(snap, live, true, errors.New("新配置下 Xray 无法运行"))
+		}
 	}
 	if err := m.store.ClearStaging(); err != nil {
 		return nil, err
 	}
 	epoch := m.epoch.Add(1)
-	return &ApplyResult{Snapshot: snap, RuleOrigins: st.RuleOrigins, Applied: st.Entries, Base: st.Base, Draft: st.Draft,
-		Version: fmt.Sprintf("live:%d:%s", epoch, digest(st.Draft))}, nil
+	res := &ApplyResult{Snapshot: snap, RuleOrigins: st.RuleOrigins, Applied: st.Entries, Base: st.Base, Draft: st.Draft,
+		Version: fmt.Sprintf("live:%d:%s", epoch, digest(st.Draft)), Health: health}
+	if wantRunning {
+		res.ConfirmBy = m.arm(snap.ID, st.Draft, chatID)
+	} else {
+		// Nothing is serving traffic, so the change cannot cut anyone off yet;
+		// a probation window would only roll back a config nobody has used.
+		m.disarm()
+	}
+	return res, nil
+}
+
+// adoptLanded finishes an apply whose write reached the panel earlier. The
+// pre-change config is Base, which is what the panel held when staging opened.
+func (m *Manager) adoptLanded(st *state.Staging, chatID int64) (*ApplyResult, error) {
+	summary := summarize(st.Entries)
+	// The attempt that landed normally left its snapshot behind already.
+	var snap *state.Snapshot
+	if snaps, err := m.store.ListSnapshots(); err == nil && len(snaps) > 0 &&
+		snaps[0].Summary == summary && sameJSON(snaps[0].Template, st.Base) {
+		snap = snaps[0]
+	} else if snap, err = m.store.SaveSnapshot(summary, st.Base); err != nil {
+		return nil, err
+	}
+	health := m.observe()
+	if err := m.store.ClearStaging(); err != nil {
+		return nil, err
+	}
+	epoch := m.epoch.Add(1)
+	res := &ApplyResult{Snapshot: snap, RuleOrigins: st.RuleOrigins, Applied: st.Entries, Base: st.Base, Draft: st.Draft,
+		Version: fmt.Sprintf("live:%d:%s", epoch, digest(st.Draft)), Health: health, AlreadyLive: true}
+	if health.Running || health.Err != nil {
+		res.ConfirmBy = m.arm(snap.ID, st.Draft, chatID)
+	}
+	return res, nil
 }
 
 // Rollback restores a snapshot, first snapshotting the current state so the
-// rollback itself can be undone.
-func (m *Manager) Rollback(id string) error { return m.rollback("", id) }
-func (m *Manager) RollbackAt(version, id string) error {
+// rollback itself can be undone. A core that is down is started afterwards,
+// since rolling back is how an operator recovers from a config that killed it.
+func (m *Manager) Rollback(id string) (Health, error) { return m.rollback("", id) }
+func (m *Manager) RollbackAt(version, id string) (Health, error) {
 	if version == "" {
-		return ErrStale
+		return Health{}, ErrStale
 	}
 	return m.rollback(version, id)
 }
-func (m *Manager) rollback(version, id string) error {
+func (m *Manager) rollback(version, id string) (Health, error) {
 	if !m.mu.TryLock() {
-		return ErrBusy
+		return Health{}, ErrBusy
 	}
 	defer m.mu.Unlock()
 	if version != "" {
 		if err := m.CheckVersion(version); err != nil {
-			return err
+			return Health{}, err
 		}
 	}
 	if _, err := m.Pending(); err == nil {
-		return errors.New("请先提交或丢弃暂存改动，再回滚快照")
+		return Health{}, errors.New("请先提交或丢弃暂存改动，再回滚快照")
 	} else if !errors.Is(err, ErrNothingStaged) {
-		return err
+		return Health{}, err
 	}
 	snap, err := m.store.GetSnapshot(id)
 	if err != nil {
-		return err
+		return Health{}, err
 	}
 	live, err := m.panel.GetXraySetting()
 	if err != nil {
-		return err
+		return Health{}, err
 	}
 	if _, err := m.store.SaveSnapshot("回滚前的状态", live.Template); err != nil {
-		return err
+		return Health{}, err
 	}
-	if err := m.panel.UpdateXraySetting(&panel.XraySetting{Template: snap.Template, OutboundTestURL: live.OutboundTestURL}); err != nil {
-		return err
+	health, err := m.restore(&panel.XraySetting{Template: snap.Template, OutboundTestURL: live.OutboundTestURL}, m.coreWanted())
+	if err != nil {
+		return Health{}, err
 	}
 	m.epoch.Add(1)
-	return nil
+	// The operator chose this config by hand; nothing is on probation now.
+	m.disarm()
+	return health, nil
 }
 
 func (m *Manager) Snapshots() ([]*state.Snapshot, error) { return m.store.ListSnapshots() }
