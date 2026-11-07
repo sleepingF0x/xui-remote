@@ -17,3 +17,36 @@ jobs:
       - run: go vet ./...
       - run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go test -race ./...
+
+  # The other tests mock the panel; this one runs the bot's apply, verify and
+  # rollback paths against a real 3x-ui so API drift shows up here first.
+  # Bump XUI_IMAGE deliberately: a new panel release is exactly what it checks.
+  contract:
+    runs-on: ubuntu-latest
+    env:
+      XUI_IMAGE: ghcr.io/mhsanaei/3x-ui:v3.11.0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+      - name: Start a disposable panel
+        run: |
+          docker run -d --name xui -p 2053:2053 -e XUI_ENABLE_FAIL2BAN=false "$XUI_IMAGE"
+          for i in $(seq 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:2053/ || true)
+            [ "$code" != "000" ] && break
+            sleep 1
+          done
+          settings=$(docker exec xui /app/x-ui setting -show true)
+          base=$(printf '%s\n' "$settings" | sed -n 's/^webBasePath: *//p')
+          base="/${base#/}"; base="${base%/}/"
+          token=$(docker exec xui /app/x-ui setting -getApiToken true -tokenName ci -tokenScope admin | sed -n 's/^apiToken: *//p')
+          test -n "$token" || { echo "no API token minted"; exit 1; }
+          echo "::add-mask::$token"
+          echo "XUI_CONTRACT_TOKEN=$token" >> "$GITHUB_ENV"
+          echo "XUI_CONTRACT_BASE_URL=http://127.0.0.1:2053${base}panel/api/" >> "$GITHUB_ENV"
+      - run: go test -count=1 -v ./internal/contract/
+      - name: Panel logs
+        if: failure()
+        run: docker logs xui 2>&1 | tail -200
