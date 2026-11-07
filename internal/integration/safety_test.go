@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mymmrac/telego"
 	"github.com/sleepingF0x/xui-remote/internal/bot"
 	"github.com/sleepingF0x/xui-remote/internal/txn"
 )
@@ -262,5 +263,51 @@ func TestStatusDoesNotCallAHeldBackRecordAnXrayError(t *testing.T) {
 	h.contains(1, "面板记录了一次被拒绝的配置")
 	if strings.Contains(h.last(1).Text, "Xray 报错") {
 		t.Fatal("a running core is reported as failing")
+	}
+}
+
+func (h *harness) screensFor(chat int64) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, s := range h.screens {
+		if s.ChatID == chat {
+			n++
+		}
+	}
+	return n
+}
+
+// A listed group says where the bot answers, not who may drive it: the admin
+// token behind it must not pass to every member of that group.
+func TestListedGroupOnlyAnswersListedMembers(t *testing.T) {
+	h := newHarness(t, initial, nil)
+	const stranger = 999
+
+	h.sendAs(groupChat, 1, "/status")
+	h.contains(groupChat, "运行状态")
+	menu := h.last(groupChat)
+	before := h.screensFor(groupChat)
+
+	h.sendAs(groupChat, stranger, "/status")
+	h.tapAs(groupChat, stranger, menu.MessageID, button(menu, "刷新"))
+	// A channel post or an anonymous admin carries no sender at all.
+	h.bot.HandleUpdate(context.Background(), telego.Update{Message: &telego.Message{MessageID: 10000, Chat: chatOf(groupChat), Text: "/status"}})
+	if got := h.screensFor(groupChat); got != before {
+		t.Fatalf("an unlisted group member got %d replies", got-before)
+	}
+
+	// A listed operator still drives the bot from the group.
+	h.tapAs(groupChat, 2, menu.MessageID, button(menu, "刷新"))
+	if got := h.screensFor(groupChat); got != before+1 {
+		t.Fatalf("a listed member's tap went unanswered")
+	}
+}
+
+func TestUnlistedPrivateChatIsIgnored(t *testing.T) {
+	h := newHarness(t, initial, nil)
+	h.send(999, "/status")
+	if h.screensFor(999) != 0 {
+		t.Fatal("an unlisted chat got a reply")
 	}
 }

@@ -104,6 +104,15 @@ func (b *Bot) Start(ctx context.Context) error {
 	return h.Start()
 }
 
+// authorized requires both the chat and the person acting in it to be listed.
+// Checking the chat alone would hand the panel's admin token to every member
+// of a listed group. In a private chat the two ids are the same, so a personal
+// id on the list keeps working exactly as before. A message with no sender,
+// such as a channel post or an anonymous group admin, is never authorized.
+func (b *Bot) authorized(chatID, userID int64) bool {
+	return userID != 0 && b.allowed[chatID] && b.allowed[userID]
+}
+
 // StartRunners launches every module's background work. Start calls it; tests
 // that drive updates by hand call it themselves.
 func (b *Bot) StartRunners(ctx context.Context) {
@@ -187,8 +196,12 @@ func (b *Bot) onMessage(ctx context.Context, msg telego.Message) {
 	chatID := msg.Chat.ID
 	// Silent drop, not a refusal: an unlisted chat should learn nothing about
 	// what this bot is or whether the id it guessed exists.
-	if !b.allowed[chatID] {
-		log.Printf("拒绝来自未授权 chat %d 的消息", chatID)
+	var sender int64
+	if msg.From != nil {
+		sender = msg.From.ID
+	}
+	if !b.authorized(chatID, sender) {
+		log.Printf("拒绝来自未授权 chat %d / 用户 %d 的消息", chatID, sender)
 		return
 	}
 	text := strings.TrimSpace(msg.Text)
@@ -322,7 +335,8 @@ func (b *Bot) handleCommand(ctx context.Context, chatID int64, text string) {
 
 func (b *Bot) onCallback(ctx context.Context, q telego.CallbackQuery) {
 	chatID := q.Message.GetChat().ID
-	if !b.allowed[chatID] {
+	if !b.authorized(chatID, q.From.ID) {
+		log.Printf("拒绝来自未授权 chat %d / 用户 %d 的按钮", chatID, q.From.ID)
 		return
 	}
 	ctx = b.beginInteraction(ctx, chatID)
