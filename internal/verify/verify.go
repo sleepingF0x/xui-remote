@@ -71,19 +71,7 @@ func (v *Verifier) one(ch state.Check) Result {
 	}
 	res.Target = target
 
-	req := panel.RouteTestRequest{Port: ch.Port, Network: ch.Network, Email: ch.User, InboundTag: ch.Inbound, Protocol: ch.Protocol}
-	if req.Port == 0 {
-		req.Port = 443
-	}
-	if req.Network == "" {
-		req.Network = "tcp"
-	}
-	if ch.Kind == "ip" {
-		req.IP = target
-	} else {
-		req.Domain = target
-	}
-	got, err := v.panel.RouteTest(req)
+	got, err := v.panel.RouteTest(request(ch, target))
 	if err != nil {
 		res.Skipped = "测试调用失败: " + err.Error()
 		return res
@@ -103,6 +91,23 @@ func (v *Verifier) one(ch state.Check) Result {
 		res.Actual = strings.Join(got.GroupTags, " → ") + " → " + got.OutboundTag
 	}
 	return res
+}
+
+// request is the synthetic connection a check describes, aimed at target.
+func request(ch state.Check, target string) panel.RouteTestRequest {
+	req := panel.RouteTestRequest{Port: ch.Port, Network: ch.Network, Email: ch.User, InboundTag: ch.Inbound, Protocol: ch.Protocol}
+	if req.Port == 0 {
+		req.Port = 443
+	}
+	if req.Network == "" {
+		req.Network = "tcp"
+	}
+	if ch.Kind == "ip" {
+		req.IP = target
+	} else {
+		req.Domain = target
+	}
+	return req
 }
 
 // resolve turns a rule value into one concrete destination to test, or returns

@@ -222,7 +222,8 @@ func (m *Module) confirmApply(c *bot.Context, replace bool) error {
 func (m *Module) apply(c *bot.Context, force bool) error {
 	// Watching the core settle takes a few seconds; say so instead of leaving
 	// the confirmation screen sitting there looking untapped.
-	_ = c.Replace("⏳ 正在提交，并确认 Xray 能正常运行…")
+	_ = c.Replace("⏳ 正在记录路由基线并提交，随后确认 Xray 能正常运行…")
+	baseline := m.baseline(c.Revision)
 	res, err := m.txn.ApplyAt(c.Revision, force, c.ChatID)
 	if errors.Is(err, txn.ErrConflict) {
 		// The live template moved under us — almost always someone editing in
@@ -275,7 +276,7 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 	if planErr != nil {
 		return c.Replace(sb.String()+"\n验证计划无法生成："+bot.Escape(planErr.Error()), bot.Keyboard(append(rows, bot.InlineRow(bot.Home()))...))
 	}
-	if len(checks) == 0 {
+	if len(checks) == 0 && baseline.Size() == 0 {
 		return c.Replace(sb.String(), bot.Keyboard(append(rows,
 			bot.InlineRow(bot.Button("🧪 去测试路由", "rtest:menu")),
 			bot.InlineRow(bot.Home()),
@@ -283,17 +284,65 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 	}
 	// Report the apply before verifying: the probes take a few seconds each and
 	// the operator should not be left wondering whether the write landed.
-	sb.WriteString(fmt.Sprintf("\n\n正在验证 %d 项…", len(checks)))
+	sb.WriteString(fmt.Sprintf("\n\n正在验证 %d 项…", len(checks)+baseline.Size()))
 	if err := c.Replace(sb.String(), bot.Keyboard(rows...)); err != nil {
 		return err
 	}
 	results := m.verifier.Run(checks)
+	side := collateral{baselined: baseline.Size()}
+	side.drifts, side.checked = m.verifier.Recheck(baseline)
 	if err := m.txn.CheckVersion(res.Version); err != nil {
 		for i := range results {
 			results[i].Skipped = "配置已再次变化，取样不能归属本次提交，请重新测试"
 		}
+		side = collateral{stale: true}
 	}
-	return m.report(c, results, res.Snapshot.ID)
+	return m.report(c, results, side, res.Snapshot.ID)
+}
+
+// baseline records, against the core still running the old config, where the
+// untouched rules' traffic goes. It is best effort: without it the apply only
+// loses the collateral check, so any failure yields nil.
+func (m *Module) baseline(revision string) *verify.Baseline {
+	view, err := m.txn.View()
+	if err != nil || view.Version != revision || view.Staging == nil {
+		return nil
+	}
+	b, err := m.verifier.Baseline(view.Staging.Base, view.Staging.Draft, view.Staging.RuleOrigins)
+	if err != nil {
+		log.Printf("记录路由基线失败: %v", err)
+		return nil
+	}
+	return b
+}
+
+// collateral is the re-probe of untouched rules after an apply.
+type collateral struct {
+	baselined int
+	checked   int
+	drifts    []verify.Drift
+	// stale means the config moved again before the probes finished, so no
+	// difference can be attributed to this apply.
+	stale bool
+}
+
+func (side collateral) render() string {
+	var sb strings.Builder
+	switch {
+	case side.stale:
+		sb.WriteString("\n<b>其他规则</b>\n➖ <i>配置已再次变化，无法判断本次提交是否影响了其他规则</i>\n")
+	case len(side.drifts) > 0:
+		sb.WriteString(fmt.Sprintf("\n<b>其他规则</b>（抽查 %d 条未改动的规则，%d 条的流量去向变了）\n", side.checked, len(side.drifts)))
+		for _, d := range side.drifts {
+			sb.WriteString(fmt.Sprintf("⚠️ %s\n    取样 %s：%s → <b>%s</b>\n",
+				bot.Escape(d.Label), bot.Escape(d.Target), bot.Escape(d.Before), bot.Escape(d.After)))
+		}
+	case side.checked > 0:
+		sb.WriteString(fmt.Sprintf("\n<b>其他规则</b>\n✅ 抽查 %d 条未改动的规则，流量去向都没变\n", side.checked))
+	case side.baselined > 0:
+		sb.WriteString("\n<b>其他规则</b>\n➖ <i>提交后的复查调用失败，无法对比</i>\n")
+	}
+	return sb.String()
 }
 
 // confirmRows offers keep and rollback while the change is on probation, and
@@ -354,7 +403,7 @@ func coreDetail(h txn.Health) string {
 
 // report renders verification results and, for a rule that did not take
 // effect, names the earlier rule that most likely swallowed it.
-func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID string) error {
+func (m *Module) report(c *bot.Context, results []verify.Result, side collateral, snapshotID string) error {
 	var sb strings.Builder
 	passed, failed := 0, 0
 
@@ -375,12 +424,16 @@ func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID stri
 		}
 	}
 
-	head := fmt.Sprintf("<b>验证 %d/%d 通过 · %d 项跳过</b>\n<i>取样结果仅代表本次提交，不能代表所有流量。</i>\n\n", passed, passed+failed, len(results)-passed-failed)
+	head := "<b>验证结果</b>\n<i>取样结果仅代表本次提交，不能代表所有流量。</i>\n\n"
+	if len(results) > 0 {
+		head = fmt.Sprintf("<b>验证 %d/%d 通过 · %d 项跳过</b>\n<i>取样结果仅代表本次提交，不能代表所有流量。</i>\n\n", passed, passed+failed, len(results)-passed-failed)
+	}
+	sb.WriteString(side.render())
 	var keep [][]telego.InlineKeyboardButton
 	if pending, ok := m.txn.Awaiting(); ok && pending.SnapshotID == snapshotID {
 		keep = append(keep, bot.InlineRow(bot.Button("✅ 保留改动", bot.CallbackData(m.Name(), "keep", snapshotID))))
 	}
-	if failed == 0 {
+	if failed == 0 && len(side.drifts) == 0 {
 		return c.Send(head+sb.String(), bot.Keyboard(append(keep, bot.InlineRow(bot.Home()))...))
 	}
 
@@ -396,7 +449,14 @@ func (m *Module) report(c *bot.Context, results []verify.Result, snapshotID stri
 		bot.InlineRow(bot.Button("回滚这次改动", c.CallbackData("rb", snapshotID))),
 		bot.InlineRow(bot.Home()),
 	)
-	return c.Send("⚠️ "+head+sb.String()+"\n<i>"+failureNote(false)+"</i>", bot.Keyboard(rows...))
+	var notes []string
+	if failed > 0 {
+		notes = append(notes, failureNote(false))
+	}
+	if len(side.drifts) > 0 {
+		notes = append(notes, "未改动的规则流量去向变了：通常是这次改的规则位置太靠前或范围太宽，接走了它们的流量。确认不是有意为之的话，回滚或调整位置。")
+	}
+	return c.Send("⚠️ "+head+sb.String()+"\n<i>"+strings.Join(notes, "\n")+"</i>", bot.Keyboard(rows...))
 }
 
 func failingRuleIndex(results []verify.Result) (int, bool) {
