@@ -423,7 +423,12 @@ func TestFinalPreviewAndVerificationIgnoreIntermediateTarget(t *testing.T) {
 	calls := 0
 	h := newHarness(t, initial, func(w http.ResponseWriter, r *http.Request) bool {
 		if r.URL.Path == "/xray/routeTest" {
-			calls++
+			// Untouched rules are probed too, for collateral rerouting; only
+			// the edited rule's probes say whether its history was replayed.
+			_ = r.ParseForm()
+			if r.Form.Get("domain") == "a.test" {
+				calls++
+			}
 			reply(w, map[string]any{"matched": true, "outboundTag": "C"})
 			return true
 		}
