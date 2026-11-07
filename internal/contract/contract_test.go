@@ -186,6 +186,46 @@ func TestPanelContract(t *testing.T) {
 			}
 		}},
 
+		{"a stored config the core refuses is written back out", func(t *testing.T) {
+			// The panel validates the template before storing it but checks
+			// socket collisions only when reconciling the core, so a template
+			// inbound on the contract inbound's port is stored and then
+			// refused: the path where the bot must undo what the panel kept.
+			m := newManager(t, p)
+			before := live(t, p)
+			if err := m.Edit("contract", "colliding inbound", func(tpl map[string]any) error {
+				inbounds, _ := tpl["inbounds"].([]any)
+				tpl["inbounds"] = append(inbounds, map[string]any{
+					"tag": "contract-collide", "port": 24443, "protocol": "tunnel",
+					"settings": map[string]any{"address": "127.0.0.1", "port": 1, "network": "tcp"},
+				})
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			_, err := m.Apply(false)
+			var failed *txn.ApplyError
+			if !errors.As(err, &failed) {
+				t.Fatalf("want the stored-then-refused path, got %v", err)
+			}
+			t.Logf("cause: %v; detail: %q; health after restore: %+v", failed.Cause, failed.Detail, failed.Health)
+			if !failed.Restored || !failed.Health.Running {
+				t.Fatalf("not restored with the core up: %+v", failed)
+			}
+			if !sameJSON(live(t, p), before) {
+				t.Fatal("the panel still holds the refused draft")
+			}
+			if _, err := m.Pending(); err != nil {
+				t.Fatalf("the draft was lost: %v", err)
+			}
+			if snaps, _ := m.Snapshots(); len(snaps) != 0 {
+				t.Fatalf("a commit that never took effect left %d snapshots", len(snaps))
+			}
+			if s, err := p.Status(); err == nil {
+				t.Logf("status after restore: state=%s errorMsg=%q", s.Xray.State, s.Xray.ErrorMsg)
+			}
+		}},
+
 		{"rollback restores the snapshot and keeps the core up", func(t *testing.T) {
 			m := newManager(t, p)
 			stage(t, m, func(rules []xraycfg.Rule) []xraycfg.Rule {
