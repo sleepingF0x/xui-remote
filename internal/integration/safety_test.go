@@ -247,3 +247,20 @@ func mustFirstSnapshot(t *testing.T, h *harness) string {
 	}
 	return snaps[0].ID
 }
+
+// A running core's errorMsg is a refusal the panel remembers until the next
+// restart, so the status page must not present it as Xray failing.
+func TestStatusDoesNotCallAHeldBackRecordAnXrayError(t *testing.T) {
+	h := newHarness(t, initial, func(w http.ResponseWriter, r *http.Request) bool {
+		if r.URL.Path != "/server/status" {
+			return false
+		}
+		reply(w, map[string]any{"xray": map[string]any{"state": "running", "errorMsg": "config refused: port 443", "version": "test"}})
+		return true
+	})
+	h.send(1, "/status")
+	h.contains(1, "面板记录了一次被拒绝的配置")
+	if strings.Contains(h.last(1).Text, "Xray 报错") {
+		t.Fatal("a running core is reported as failing")
+	}
+}

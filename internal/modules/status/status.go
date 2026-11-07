@@ -66,7 +66,15 @@ func (m *Module) render(c *bot.Context, replace bool) error {
 	sb.WriteString(fmt.Sprintf("CPU       %.1f%%\n", s.Cpu))
 	sb.WriteString(fmt.Sprintf("内存      %s / %s\n", humanBytes(s.Mem.Current), humanBytes(s.Mem.Total)))
 	sb.WriteString(fmt.Sprintf("TCP 连接  %d\n", s.TcpCount))
-	if s.Xray.ErrorMsg != "" {
+	switch {
+	case s.Xray.ErrorMsg == "":
+	case strings.EqualFold(s.Xray.State, "running"):
+		// A running core's errorMsg is the panel's record of a config it
+		// refused, kept until the process next restarts — so it can outlive
+		// the refused config itself, e.g. after the bot restored the old one.
+		sb.WriteString("\nℹ️ <b>面板记录了一次被拒绝的配置</b>\n" + bot.Code(truncate(s.Xray.ErrorMsg, 500)) +
+			"\n<i>Xray 继续运行被拒绝之前的配置。这条记录要到 Xray 下次重启才会清除。</i>")
+	default:
 		sb.WriteString("\n⚠️ <b>Xray 报错</b>\n" + bot.Code(truncate(s.Xray.ErrorMsg, 500)))
 	}
 
