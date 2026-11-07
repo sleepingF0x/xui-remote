@@ -318,3 +318,17 @@ func TestRuleComparisonDetectsARetarget(t *testing.T) {
 		t.Fatal("a retarget must be visible as a different target")
 	}
 }
+
+func TestDisabledRuleIsMarkedAndShadowsNothing(t *testing.T) {
+	r := Rule{Raw: map[string]any{"type": "field", "outboundTag": "A", "enabled": false}}
+	if !r.Disabled() || r.IsCatchAll() {
+		t.Fatal("a disabled catch-all is dropped by the panel and shadows nothing")
+	}
+	if got := r.Summary(); got != "（已停用）(无匹配条件)" {
+		t.Fatalf("summary %q", got)
+	}
+	r.Raw["enabled"] = true
+	if r.Disabled() || !r.IsCatchAll() {
+		t.Fatal("enabled:true is the normal state")
+	}
+}

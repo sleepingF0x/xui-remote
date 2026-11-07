@@ -62,8 +62,27 @@ func (r Rule) Target() string {
 	return "(未设置)"
 }
 
+// Disabled reports a rule switched off in the panel's routing editor. The
+// panel drops such a rule when it builds the core's config, so it routes
+// nothing; "enabled" and "comment" never reach Xray at all.
+func (r Rule) Disabled() bool {
+	enabled, ok := r.Raw["enabled"].(bool)
+	return ok && !enabled
+}
+
+// PanelOnlyKeys are rule fields the panel strips before handing the config to
+// Xray. They are bookkeeping, not matchers.
+var PanelOnlyKeys = map[string]bool{"enabled": true, "comment": true}
+
 // Summary is a one-line description for the rule list.
 func (r Rule) Summary() string {
+	if r.Disabled() {
+		return "（已停用）" + r.matchSummary()
+	}
+	return r.matchSummary()
+}
+
+func (r Rule) matchSummary() string {
 	var parts []string
 	if v := stringsOf(r.Raw["domain"]); len(v) > 0 {
 		parts = append(parts, "domain: "+joinPreview(v, 2))
@@ -97,6 +116,9 @@ func (r Rule) Summary() string {
 // inboundTag counts as narrowing: a rule scoped to one inbound never sees
 // traffic arriving on another, so it shadows nothing for the rest of them.
 func (r Rule) IsCatchAll() bool {
+	if r.Disabled() {
+		return false
+	}
 	for _, key := range []string{"domain", "ip", "port", "source", "sourcePort", "protocol", "user", "attrs", "inboundTag"} {
 		if has(r.Raw[key]) {
 			return false

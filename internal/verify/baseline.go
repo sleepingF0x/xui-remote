@@ -227,7 +227,8 @@ func collateralRules(base, draft json.RawMessage, origins ...[]int) ([]xraycfg.R
 	var below, above []xraycfg.Rule
 	for _, r := range rules {
 		switch {
-		case edited[r.Index]:
+		case edited[r.Index], r.Disabled():
+			// A disabled rule routes nothing, so it has no traffic to lose.
 		case r.Index >= first:
 			below = append(below, r)
 		case other:
