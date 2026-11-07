@@ -60,11 +60,58 @@ func Rebase(base, ours, theirs json.RawMessage) (merged json.RawMessage, fromThe
 		delete(out, "routing")
 	}
 
+	// Regions are merged independently, but rules point across them: their
+	// deleting outbound B and our new rule routing to B touch different
+	// regions yet leave traffic aimed at nothing. Xray accepts such a config
+	// and routeTest still names B, so this is the only place it can be caught.
+	conflicts = append(conflicts, danglingTargets(o, out)...)
 	if len(conflicts) > 0 {
 		return nil, nil, conflicts, nil
 	}
 	merged, err = json.MarshalIndent(out, "", "  ")
 	return merged, fromTheirs, nil, err
+}
+
+// danglingTargets names the regions whose removal broke a rule in merged: a
+// rule aiming at an outbound or balancer ours defined and merged no longer
+// does. Targets ours never defined (subscription outbounds live outside the
+// template) are not this merge's doing and are left alone.
+func danglingTargets(ours, merged map[string]any) []string {
+	defined := func(m map[string]any) (outbounds, balancers map[string]bool) {
+		outbounds, balancers = map[string]bool{}, map[string]bool{}
+		for _, o := range Outbounds(m) {
+			if tag, _ := o.Raw["tag"].(string); tag != "" {
+				outbounds[tag] = true
+			}
+		}
+		for _, tag := range BalancerTags(m) {
+			balancers[tag] = true
+		}
+		return outbounds, balancers
+	}
+	oursOut, oursBal := defined(ours)
+	mergedOut, mergedBal := defined(merged)
+	rules, err := Rules(merged)
+	if err != nil {
+		return nil
+	}
+	var lostOutbound, lostBalancer bool
+	for _, r := range rules {
+		if tag, _ := r.Raw["outboundTag"].(string); tag != "" && oursOut[tag] && !mergedOut[tag] {
+			lostOutbound = true
+		}
+		if tag, _ := r.Raw["balancerTag"].(string); tag != "" && oursBal[tag] && !mergedBal[tag] {
+			lostBalancer = true
+		}
+	}
+	var out []string
+	if lostOutbound {
+		out = append(out, "outbounds")
+	}
+	if lostBalancer {
+		out = append(out, "routing.balancers")
+	}
+	return out
 }
 
 // RebasedRules reports whether a rebase took routing.rules from theirs. The

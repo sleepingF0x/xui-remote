@@ -88,3 +88,22 @@ func TestRebaseAcceptsTheSameEditOnBothSides(t *testing.T) {
 		t.Fatalf("identical edits: took %v conflicts %v err %v", took, conflicts, err)
 	}
 }
+
+// Their deleting an outbound and our new rule using it are different regions,
+// but merging them would route traffic to nothing without any error.
+func TestRebaseRefusesARuleWhoseTargetTheyDeleted(t *testing.T) {
+	base := `{"outbounds":[{"tag":"direct"},{"tag":"B"}],"routing":{"rules":[]}}`
+	ours := `{"outbounds":[{"tag":"direct"},{"tag":"B"}],"routing":{"rules":[{"type":"field","domain":["domain:x.test"],"outboundTag":"B"}]}}`
+	theirs := `{"outbounds":[{"tag":"direct"}],"routing":{"rules":[]}}`
+	_, _, conflicts, err := Rebase(json.RawMessage(base), json.RawMessage(ours), json.RawMessage(theirs))
+	if err != nil || !reflect.DeepEqual(conflicts, []string{"outbounds"}) {
+		t.Fatalf("conflicts %v err %v", conflicts, err)
+	}
+
+	// A rule aimed at an outbound the template never defined (a subscription
+	// outbound) is not something this merge broke.
+	ours = `{"outbounds":[{"tag":"direct"},{"tag":"B"}],"routing":{"rules":[{"type":"field","domain":["domain:x.test"],"outboundTag":"sub-node"}]}}`
+	if _, _, conflicts, err := Rebase(json.RawMessage(base), json.RawMessage(ours), json.RawMessage(theirs)); err != nil || conflicts != nil {
+		t.Fatalf("subscription target flagged: %v %v", conflicts, err)
+	}
+}
