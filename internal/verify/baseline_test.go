@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+
+	"github.com/sleepingF0x/xui-remote/internal/xraycfg"
 )
 
 const threeRules = `{"outbounds":[{"tag":"A"},{"tag":"B"}],"routing":{"rules":[
@@ -65,5 +67,35 @@ func TestRouteKeyIgnoresTheNodeABalancerPicked(t *testing.T) {
 	}
 	if (route{matched: true, outbound: "A"}).key() == (route{matched: false, outbound: "A"}).key() {
 		t.Fatal("falling through to the default outbound must differ from matching a rule")
+	}
+}
+
+// The panel's routing editor writes "enabled" (and sometimes "comment") onto
+// every rule it touches, and strips them before Xray sees the config. Counting
+// them as constraints skipped verification of nearly every such rule.
+func TestPanelOnlyRuleFieldsDoNotBlockVerification(t *testing.T) {
+	r := xraycfg.Rule{Index: 4, Raw: map[string]any{"type": "field", "domain": []any{"geosite:anthropic"},
+		"outboundTag": "us", "ruleTag": "admin-us-ai", "user": []any{"admin"}, "enabled": true, "comment": "x"}}
+	checks := ruleChecks(r)
+	if len(checks) != 1 || checks[0].Skip != "" || checks[0].User != "admin" {
+		t.Fatalf("an enabled rule should be probed as admin: %+v", checks)
+	}
+	r.Raw["enabled"] = false
+	if checks := ruleChecks(r); checks[0].Skip == "" {
+		t.Fatal("a disabled rule routes nothing and must not be asserted")
+	}
+}
+
+func TestDisabledRulesAreNotCollateralCandidates(t *testing.T) {
+	base := `{"outbounds":[{"tag":"A"},{"tag":"B"}],"routing":{"rules":[
+{"type":"field","domain":["domain:a.test"],"outboundTag":"A"},
+{"type":"field","domain":["domain:b.test"],"outboundTag":"B","enabled":false},
+{"type":"field","domain":["domain:c.test"],"outboundTag":"A","enabled":true}]}}`
+	draft := `{"outbounds":[{"tag":"A"},{"tag":"B"}],"routing":{"rules":[
+{"type":"field","domain":["domain:a.test"],"outboundTag":"B"},
+{"type":"field","domain":["domain:b.test"],"outboundTag":"B","enabled":false},
+{"type":"field","domain":["domain:c.test"],"outboundTag":"A","enabled":true}]}}`
+	if got := indices(t, base, draft); !reflect.DeepEqual(got, []int{2}) {
+		t.Fatalf("got %v, want only the enabled untouched rule [2]", got)
 	}
 }

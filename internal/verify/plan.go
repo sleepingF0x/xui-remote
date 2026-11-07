@@ -57,7 +57,7 @@ func ruleChecks(r xraycfg.Rule) []state.Check {
 	supported := map[string]bool{"type": true, "ruleTag": true, "domain": true, "ip": true, "user": true, "inboundTag": true, "protocol": true, "network": true, "port": true, "outboundTag": true, "balancerTag": true}
 	var unsupported []string
 	for k, v := range r.Raw {
-		if !supported[k] && v != nil {
+		if !supported[k] && !xraycfg.PanelOnlyKeys[k] && v != nil {
 			unsupported = append(unsupported, k)
 		}
 	}
@@ -74,6 +74,9 @@ func ruleChecks(r xraycfg.Rule) []state.Check {
 	}
 	if ch.Network != "tcp" && ch.Network != "udp" {
 		ch.Skip = "网络类型无法取样"
+	}
+	if r.Disabled() {
+		ch.Skip = "规则已停用，面板不会把它交给 Xray"
 	}
 	out := make([]state.Check, 0, len(values))
 	for _, value := range values {
