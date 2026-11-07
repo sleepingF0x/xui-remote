@@ -16,7 +16,15 @@
 
 需要一个支持管理员 API Token 的 3x-ui 面板，以及一个独立的 Telegram Bot。运行机器须能访问面板和 Telegram。
 
-安装 Go 1.27 或更高版本，然后构建：
+从 [Releases](https://github.com/sleepingF0x/xui-remote/releases) 下载对应架构的压缩包（`amd64` 或 `arm64`）：
+
+```bash
+curl -fsSL https://github.com/sleepingF0x/xui-remote/releases/latest/download/xui-remote_linux_amd64.tar.gz | tar -xz
+cd xui-remote_linux_amd64
+cp config.example.yaml config.yaml
+```
+
+压缩包里有程序、配置示例和 systemd 服务文件，`checksums.txt` 可用来校验下载。也可以安装 Go 1.27 或更高版本后从源码构建：
 
 ```bash
 git clone https://github.com/sleepingF0x/xui-remote.git
@@ -45,7 +53,7 @@ cp config.example.yaml config.yaml
 
 在 Telegram 中向 Bot 发送 `/start`，通过菜单操作。平时也可以直接发送域名或 IP，选择路由测试等操作。
 
-长期运行可参考 [systemd 服务文件](xui-remote.service)，按其中的路径放置程序和配置，并创建对应的服务用户。习惯用 Docker 的用户可使用仓库中的 [Compose 配置](docker-compose.yml)。
+长期运行可参考 [systemd 服务文件](xui-remote.service)，按其中的路径放置程序和配置，并创建对应的服务用户。习惯用 Docker 的用户可使用仓库中的 [Compose 配置](docker-compose.yml)，镜像为 `ghcr.io/sleepingf0x/xui-remote`。`./xui-remote -version` 显示当前版本。
 
 ## 改动何时生效
 

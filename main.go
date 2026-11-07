@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -26,11 +27,20 @@ import (
 	"github.com/sleepingF0x/xui-remote/internal/verify"
 )
 
+// version is set at release build time with -ldflags "-X main.version=...".
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "config.yaml", "path to the YAML config file")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	checkOnly := flag.Bool("check", false, "verify panel connectivity and exit")
 	selfTest := flag.Bool("selftest", false, "exercise every read path against the panel and exit")
 	flag.Parse()
+	if *showVersion {
+		fmt.Println("xui-remote", version)
+		return
+	}
+	log.Printf("xui-remote %s", version)
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
