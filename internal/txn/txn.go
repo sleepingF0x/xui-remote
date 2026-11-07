@@ -247,6 +247,53 @@ type ApplyResult struct {
 	// ConfirmBy is when the change is rolled back unless kept; zero when no
 	// confirmation window was armed.
 	ConfirmBy time.Time
+	// Merged names the regions the web panel changed after staging opened,
+	// which were kept and went live together with the draft.
+	Merged []string
+}
+
+// ConflictError is a draft and a web-panel edit that changed the same region
+// of the template differently, so neither can be kept without losing the other.
+type ConflictError struct {
+	Regions []string
+}
+
+func (e *ConflictError) Error() string {
+	return ErrConflict.Error() + "（" + strings.Join(e.Regions, "、") + "）"
+}
+
+func (e *ConflictError) Is(target error) bool { return target == ErrConflict }
+
+// rebase moves staging onto live, the template the panel holds now, and saves
+// it. The draft keeps only the operator's own change; see xraycfg.Rebase.
+func (m *Manager) rebase(st *state.Staging, live json.RawMessage) ([]string, error) {
+	draft, fromTheirs, conflicts, err := xraycfg.Rebase(st.Base, st.Draft, live)
+	if err != nil {
+		return nil, err
+	}
+	if len(conflicts) > 0 {
+		return nil, &ConflictError{Regions: conflicts}
+	}
+	if xraycfg.RebasedRules(fromTheirs) {
+		// The draft's rules are now exactly the new base's.
+		tpl, err := xraycfg.ParseTemplate(draft)
+		if err != nil {
+			return nil, err
+		}
+		rules, err := xraycfg.Rules(tpl)
+		if err != nil {
+			return nil, err
+		}
+		st.RuleOrigins = make([]int, len(rules))
+		for i := range st.RuleOrigins {
+			st.RuleOrigins[i] = i
+		}
+	}
+	st.Base, st.Draft, st.Revision = live, draft, rand.Text()
+	if err := m.store.SaveStaging(st); err != nil {
+		return nil, err
+	}
+	return fromTheirs, nil
 }
 
 // Apply writes the draft to the panel after snapshotting what was live, so a
@@ -290,8 +337,17 @@ func (m *Manager) apply(version string, force bool, chatID int64) (*ApplyResult,
 	if sameJSON(live.Template, st.Draft) {
 		return m.adoptLanded(st, chatID)
 	}
+	var merged []string
 	if !force && !sameJSON(live.Template, st.Base) {
-		return nil, ErrConflict
+		// Whatever the web panel saved is already live; replaying the draft on
+		// top keeps it, where overwriting would revert it and discarding would
+		// throw away the operator's work.
+		if merged, err = m.rebase(st, live.Template); err != nil {
+			return nil, err
+		}
+		if sameJSON(live.Template, st.Draft) {
+			return nil, ErrNoChanges
+		}
 	}
 	// Whether the core is meant to run decides what a healthy result looks
 	// like: the panel leaves a manually stopped core stopped.
@@ -336,7 +392,7 @@ func (m *Manager) apply(version string, force bool, chatID int64) (*ApplyResult,
 	}
 	epoch := m.epoch.Add(1)
 	res := &ApplyResult{Snapshot: snap, RuleOrigins: st.RuleOrigins, Applied: st.Entries, Base: st.Base, Draft: st.Draft,
-		Version: fmt.Sprintf("live:%d:%s", epoch, digest(st.Draft)), Health: health}
+		Version: fmt.Sprintf("live:%d:%s", epoch, digest(st.Draft)), Health: health, Merged: merged}
 	if wantRunning {
 		res.ConfirmBy = m.arm(snap.ID, st.Draft, chatID)
 	} else {
