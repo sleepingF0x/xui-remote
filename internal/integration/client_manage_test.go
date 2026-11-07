@@ -293,3 +293,18 @@ func TestToggleAndResetActOnTheClient(t *testing.T) {
 		t.Fatalf("%d resets", f.resets)
 	}
 }
+
+// A client the panel disabled for running out stays disabled after a renewal;
+// the operator has to be told rather than left assuming it works again.
+func TestRenewingADisabledClientSaysItIsStillDisabled(t *testing.T) {
+	f := newFakeClients()
+	f.records["alice"]["enable"] = false
+	h := newHarness(t, initial, f.serve)
+	h.openClient(1, "alice")
+	h.press(1, "⏳ 有效期")
+	h.press(1, "+30 天")
+	h.contains(1, "目前是停用状态")
+	if f.get("alice")["enable"] != false {
+		t.Fatal("a renewal silently re-enabled the client")
+	}
+}

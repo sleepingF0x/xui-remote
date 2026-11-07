@@ -423,7 +423,17 @@ func (m *Module) setExpiry(c *bot.Context, email string, days int) error {
 	if err != nil {
 		return fmt.Errorf("修改有效期失败: %w", err)
 	}
-	return m.viewWithNote(c, email, "有效期已改为 "+expiryText(next)+"。")
+	return m.viewWithNote(c, email, "有效期已改为 "+expiryText(next)+"。"+m.stillDisabled(email))
+}
+
+// stillDisabled reminds that renewing or raising a quota does not re-enable a
+// client the panel switched off when it ran out: the edit writes the flag back
+// unchanged, and it may also have been switched off on purpose.
+func (m *Module) stillDisabled(email string) string {
+	if d, err := m.panel.GetClient(email); err == nil && !d.Bool("enable") {
+		return "\n⚠️ 这个客户端目前是停用状态，修改额度或有效期不会自动启用；需要的话点「▶️ 启用」。"
+	}
+	return ""
 }
 
 func (m *Module) setExpiryFromToday(c *bot.Context, email string, days int) error {
@@ -431,7 +441,7 @@ func (m *Module) setExpiryFromToday(c *bot.Context, email string, days int) erro
 	if err := m.panel.UpdateClient(email, func(client map[string]any) { client["expiryTime"] = next }); err != nil {
 		return fmt.Errorf("修改有效期失败: %w", err)
 	}
-	return m.viewWithNote(c, email, "有效期已改为 "+expiryText(next)+"。")
+	return m.viewWithNote(c, email, "有效期已改为 "+expiryText(next)+"。"+m.stillDisabled(email))
 }
 
 func (m *Module) quotaMenu(c *bot.Context, email string) error {
@@ -458,6 +468,8 @@ func (m *Module) setQuota(c *bot.Context, email string, gb int) error {
 	note := "流量额度已改为 " + quotaLabel(gb) + "。"
 	if t, err := m.panel.ClientTraffic(email); err == nil && gb > 0 && t.Up+t.Down >= int64(gb)*gib {
 		note += "\n⚠️ 已用流量已经超过新额度，面板会停用这个客户端。"
+	} else {
+		note += m.stillDisabled(email)
 	}
 	return m.viewWithNote(c, email, note)
 }
