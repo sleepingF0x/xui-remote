@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -223,6 +224,46 @@ func TestPanelContract(t *testing.T) {
 			}
 			if s, err := p.Status(); err == nil {
 				t.Logf("status after restore: state=%s errorMsg=%q", s.Xray.State, s.Xray.ErrorMsg)
+			}
+		}},
+
+		{"a web-panel save to another region is merged into the apply", func(t *testing.T) {
+			m := newManager(t, p)
+			stage(t, m, func(rules []xraycfg.Rule) []xraycfg.Rule {
+				return xraycfg.Insert(rules, len(rules), rule("domain:merge."+probeDomain, other))
+			})
+			// Stand in for someone saving in the web panel after staging opened.
+			web, err := p.GetXraySetting()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var tpl map[string]any
+			if err := json.Unmarshal(web.Template, &tpl); err != nil {
+				t.Fatal(err)
+			}
+			tpl["log"] = map[string]any{"loglevel": "info", "access": "none"}
+			web.Template, _ = json.Marshal(tpl)
+			if err := p.UpdateXraySetting(web); err != nil {
+				t.Fatal(err)
+			}
+			res, err := m.Apply(false)
+			if err != nil {
+				t.Fatalf("a disjoint web-panel edit blocked the apply: %v", err)
+			}
+			t.Logf("merged from the panel: %v", res.Merged)
+			if !slices.Contains(res.Merged, "log") {
+				t.Fatalf("merge did not report the log edit: %v", res.Merged)
+			}
+			var got struct {
+				Log map[string]any `json:"log"`
+			}
+			_ = json.Unmarshal(live(t, p), &got)
+			if got.Log["loglevel"] != "info" {
+				t.Fatalf("the web-panel edit was reverted: %v", got.Log)
+			}
+			r, err := p.RouteTest(panel.RouteTestRequest{Domain: "merge." + probeDomain, Port: 443, Network: "tcp"})
+			if err != nil || !r.Matched || r.OutboundTag != other {
+				t.Fatalf("the draft did not go live: %+v %v", r, err)
 			}
 		}},
 

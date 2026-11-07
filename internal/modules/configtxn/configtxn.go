@@ -226,11 +226,16 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 	baseline := m.baseline(c.Revision)
 	res, err := m.txn.ApplyAt(c.Revision, force, c.ChatID)
 	if errors.Is(err, txn.ErrConflict) {
-		// The live template moved under us — almost always someone editing in
-		// the web panel. Overwriting would silently drop their change.
+		// The web panel changed the same part of the config as the draft, so
+		// the two cannot both be kept. Overwriting would silently drop theirs.
+		where := "同一部分配置"
+		var conflict *txn.ConflictError
+		if errors.As(err, &conflict) {
+			where = bot.Escape(regionNames(conflict.Regions))
+		}
 		return c.Replace(
-			"⚠️ <b>面板侧配置已变更</b>\n\n有人在网页面板改过配置。现在提交会覆盖掉那些改动。\n\n"+
-				"建议丢弃暂存区、重新做一遍改动。",
+			"⚠️ <b>面板侧配置已变更</b>\n\n有人在网页面板改了 <b>"+where+"</b>，和暂存区的改动是同一部分，无法自动合并。"+
+				"现在提交会覆盖掉网页面板的改动。\n\n建议丢弃暂存区、在新配置上重新做一遍改动。",
 			bot.Keyboard(
 				bot.InlineRow(bot.Button("仍然覆盖提交", c.CallbackData("applyforce"))),
 				bot.InlineRow(bot.Button("丢弃暂存区", c.CallbackData("discard"))),
@@ -256,6 +261,10 @@ func (m *Module) apply(c *bot.Context, force bool) error {
 		sb.WriteString("✅ <b>已提交</b>\n⚠️ 读取 Xray 状态失败：" + bot.Escape(res.Health.Err.Error()) + "\n\n")
 	default:
 		sb.WriteString("⚠️ <b>已提交，但 Xray 没有在运行</b>\n" + coreDetail(res.Health) + "\n")
+	}
+	if len(res.Merged) > 0 {
+		sb.WriteString("<i>暂存之后网页面板改过 " + bot.Escape(regionNames(res.Merged)) +
+			"，和你的改动不冲突，已一并保留。</i>\n\n")
 	}
 	if res.AlreadyLive {
 		sb.WriteString("<i>上次提交其实已写入面板（当时没收到面板的回复），这次只做了记录，没有再次写入。</i>\n\n")
@@ -391,6 +400,25 @@ func (m *Module) reportFailedApply(c *bot.Context, e *txn.ApplyError) error {
 		bot.InlineRow(bot.Button("查看暂存区", bot.CallbackData(m.Name(), "diff"))),
 		bot.InlineRow(bot.Home()),
 	))
+}
+
+// regionNames renders template regions the way the panel's editor labels
+// them, falling back to the JSON path for anything else.
+func regionNames(regions []string) string {
+	known := map[string]string{
+		"routing.rules": "路由规则", "routing.balancers": "负载均衡器", "outbounds": "出站",
+		"inbounds": "入站模板", "dns": "DNS", "log": "日志设置", "policy": "策略",
+		"routing.domainStrategy": "域名策略",
+	}
+	names := make([]string, 0, len(regions))
+	for _, r := range regions {
+		if n, ok := known[r]; ok {
+			names = append(names, n)
+		} else {
+			names = append(names, r)
+		}
+	}
+	return strings.Join(names, "、")
 }
 
 func coreDetail(h txn.Health) string {

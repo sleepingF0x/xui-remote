@@ -311,3 +311,48 @@ func TestUnlistedPrivateChatIsIgnored(t *testing.T) {
 		t.Fatal("an unlisted chat got a reply")
 	}
 }
+
+// A web-panel save is live as soon as it lands, so an apply that touched other
+// parts of the config must keep it rather than revert it or demand a discard.
+func TestDisjointWebPanelEditIsMergedNotAConflict(t *testing.T) {
+	h := newHarness(t, initial, nil)
+	h.retarget(1, 1, "C")
+	web := strings.Replace(initial, `{"outbounds":`, `{"log":{"loglevel":"info"},"outbounds":`, 1)
+	h.mu.Lock()
+	h.live = json.RawMessage(web)
+	h.mu.Unlock()
+
+	h.apply(1)
+	h.saw(1, "网页面板改过 日志设置")
+	var tpl struct {
+		Log     map[string]any `json:"log"`
+		Routing struct {
+			Rules []struct {
+				OutboundTag string `json:"outboundTag"`
+			} `json:"rules"`
+		} `json:"routing"`
+	}
+	_ = json.Unmarshal(h.liveJSON(), &tpl)
+	if tpl.Log["loglevel"] != "info" {
+		t.Fatalf("the web-panel edit was reverted: %s", h.liveJSON())
+	}
+	if tpl.Routing.Rules[0].OutboundTag != "C" {
+		t.Fatalf("the draft was not applied: %s", h.liveJSON())
+	}
+	if h.writes != 1 {
+		t.Fatalf("%d writes for one apply", h.writes)
+	}
+}
+
+func TestConflictNamesTheRegionBothSidesChanged(t *testing.T) {
+	h := newHarness(t, initial, nil)
+	h.retarget(1, 1, "C")
+	h.mu.Lock()
+	h.live = json.RawMessage(strings.Replace(initial, "domain:c.test", "domain:web.test", 1))
+	h.mu.Unlock()
+	h.apply(1)
+	h.contains(1, "改了 <b>路由规则</b>")
+	if h.writes != 0 {
+		t.Fatal("a conflicting web-panel edit was overwritten")
+	}
+}
