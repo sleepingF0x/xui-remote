@@ -7,13 +7,15 @@
 //	XUI_CONTRACT_BASE_URL=http://127.0.0.1:2053/panel/api/ \
 //	XUI_CONTRACT_TOKEN=<admin token> go test -count=1 -v ./internal/contract/
 //
-// It rewrites the Xray config, so it refuses a panel that has any inbounds.
+// It rewrites the Xray config, so it refuses a panel with any inbound it did
+// not create itself.
 package contract_test
 
 import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"net/url"
 	"os"
 	"reflect"
 	"testing"
@@ -32,6 +34,12 @@ const (
 	// broadMatcher also matches probeDomain, so a rule using it placed above
 	// the probe rule takes that traffic over.
 	broadMatcher = "domain:example"
+	// contractRemark marks the one inbound this test creates; any other
+	// inbound means the panel is in use and must not be touched.
+	contractRemark = "xui-remote-contract"
+	// publicHost exercises panel.public_host: without it, share links built
+	// for a loopback dial would point clients at 127.0.0.1.
+	publicHost = "panel.contract.example"
 )
 
 func TestPanelContract(t *testing.T) {
@@ -39,14 +47,23 @@ func TestPanelContract(t *testing.T) {
 	if base == "" || token == "" {
 		t.Skip("set XUI_CONTRACT_BASE_URL and XUI_CONTRACT_TOKEN to run against a disposable panel")
 	}
-	p := panel.New(panel.Options{BaseURL: base, Token: token, Timeout: 30 * time.Second})
+	p := panel.New(panel.Options{BaseURL: base, Token: token, PublicHost: publicHost, Timeout: 30 * time.Second})
 
 	inbounds, err := p.ListInbounds()
 	if err != nil {
 		t.Fatalf("list inbounds: %v", err)
 	}
-	if len(inbounds) > 0 {
-		t.Fatalf("refusing to run: the panel has %d inbounds. This test rewrites the Xray config; point it at a throwaway panel", len(inbounds))
+	ours := false
+	for _, in := range inbounds {
+		if in.Remark != contractRemark {
+			t.Fatalf("refusing to run: inbound %q is not this test's. It rewrites the Xray config; point it at a throwaway panel", in.Remark)
+		}
+		ours = true
+	}
+	if !ours {
+		// The self-test reads inbounds, clients and share links; an empty
+		// panel would leave those decoders unexercised.
+		addInbound(t, p)
 	}
 	waitRunning(t, p)
 
@@ -221,6 +238,29 @@ func TestPanelContract(t *testing.T) {
 		if !t.Run(s.name, s.fn) {
 			return
 		}
+	}
+}
+
+func addInbound(t *testing.T, p *panel.Client) {
+	t.Helper()
+	settings, _ := json.Marshal(map[string]any{
+		"clients": []any{map[string]any{
+			"id": "6f1c8a52-3b8e-4d0a-9c1e-2a7d5b4e9f01", "email": "contract@xui-remote.test",
+			"enable": true, "subId": "xuiremotecontract", "flow": "",
+		}},
+		"decryption": "none",
+	})
+	form := url.Values{}
+	form.Set("remark", contractRemark)
+	form.Set("enable", "true")
+	form.Set("port", "24443")
+	form.Set("protocol", "vless")
+	form.Set("tag", "contract-in-24443")
+	form.Set("settings", string(settings))
+	form.Set("streamSettings", `{"network":"tcp","security":"none","tcpSettings":{"header":{"type":"none"}}}`)
+	form.Set("sniffing", `{"enabled":false}`)
+	if _, err := p.Post("inbounds/add", form); err != nil {
+		t.Fatalf("create the contract inbound: %v", err)
 	}
 }
 
