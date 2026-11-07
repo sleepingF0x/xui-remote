@@ -103,7 +103,7 @@ func newHarness(t *testing.T, template string, hook func(http.ResponseWriter, *h
 	// 1 and 2 are operators; groupChat is a group they share. Anyone else,
 	// including other members of that group, is unlisted.
 	h.bot = bot.NewWithAPI(api, []int64{1, 2, groupChat})
-	h.bot.Register(routing.New(h.manager), outbound.New(p, h.manager), inbound.New(p), routetest.New(p, h.manager), h.config, client.New(p), status.New(p))
+	h.bot.Register(routing.New(h.manager), outbound.New(p, h.manager), inbound.New(p), routetest.New(p, h.manager), h.config, client.New(p, st), status.New(p))
 	return h
 }
 

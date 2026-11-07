@@ -91,7 +91,7 @@ func main() {
 		inbound.New(api),
 		routetest.New(api, manager),
 		configtxn.New(manager, verify.New(api)),
-		client.New(api),
+		client.New(api, store),
 		status.New(api),
 	)
 
