@@ -90,6 +90,8 @@ func (b *Bot) Start(ctx context.Context) error {
 		return err
 	}
 
+	b.StartRunners(ctx)
+
 	h.HandleMessage(func(_ *th.Context, msg telego.Message) error {
 		go b.HandleUpdate(ctx, telego.Update{Message: &msg})
 		return nil
@@ -100,6 +102,28 @@ func (b *Bot) Start(ctx context.Context) error {
 	}, th.AnyCallbackQueryWithMessage())
 
 	return h.Start()
+}
+
+// StartRunners launches every module's background work. Start calls it; tests
+// that drive updates by hand call it themselves.
+func (b *Bot) StartRunners(ctx context.Context) {
+	for _, m := range b.modules {
+		r, ok := m.(Runner)
+		if !ok {
+			continue
+		}
+		name := m.Name()
+		go b.safely(func() { r.Run(ctx, func(chatID int64) *Context { return b.Open(ctx, chatID, name) }) })
+	}
+}
+
+// Open builds a Context for posting to chatID outside any interaction. A chat
+// that is no longer allowed gets nothing.
+func (b *Bot) Open(ctx context.Context, chatID int64, module string) *Context {
+	if !b.allowed[chatID] {
+		return nil
+	}
+	return b.context(ctx, chatID, 0, module)
 }
 
 // HandleUpdate dispatches one Telegram update through the same authorization

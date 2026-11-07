@@ -51,13 +51,20 @@ type harness struct {
 	live    json.RawMessage
 	writes  int
 	hook    func(http.ResponseWriter, *http.Request) bool
+	// xray is the simulated core state; a rule routed to brokenMarker kills
+	// the core whenever it (re)starts.
+	xray     string
+	restarts int
+	config   *configtxn.Module
 }
+
+const brokenMarker = "BROKEN"
 
 const initial = `{"outbounds":[{"tag":"A","protocol":"freedom"},{"tag":"B","protocol":"freedom"},{"tag":"C","protocol":"freedom"}],"routing":{"rules":[{"type":"field","domain":["domain:a.test"],"outboundTag":"A"},{"type":"field","domain":["domain:b.test"],"outboundTag":"B"},{"type":"field","domain":["domain:c.test"],"outboundTag":"C"}],"balancers":[{"tag":"auto","selector":["A"]}]}}`
 
-func newHarness(t *testing.T, template string, hook func(http.ResponseWriter, *http.Request) bool) *harness {
+func newHarness(t *testing.T, template string, hook func(http.ResponseWriter, *http.Request) bool, opts ...txn.Option) *harness {
 	t.Helper()
-	h := &harness{t: t, live: json.RawMessage(template), hook: hook}
+	h := &harness{t: t, live: json.RawMessage(template), hook: hook, xray: "running"}
 	ps := httptest.NewServer(http.HandlerFunc(h.panelRequest))
 	t.Cleanup(ps.Close)
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -89,9 +96,10 @@ func newHarness(t *testing.T, template string, hook func(http.ResponseWriter, *h
 	}
 	p := panel.New(panel.Options{BaseURL: ps.URL, Token: "test", Timeout: 5 * time.Second})
 	h.store = st
-	h.manager = txn.New(p, st)
+	h.manager = txn.New(p, st, append([]txn.Option{txn.WithSettle(0)}, opts...)...)
+	h.config = configtxn.New(h.manager, verify.New(p))
 	h.bot = bot.NewWithAPI(api, []int64{1, 2})
-	h.bot.Register(routing.New(h.manager), outbound.New(p, h.manager), inbound.New(p), routetest.New(p, h.manager), configtxn.New(h.manager, verify.New(p)), client.New(p), status.New(p))
+	h.bot.Register(routing.New(h.manager), outbound.New(p, h.manager), inbound.New(p), routetest.New(p, h.manager), h.config, client.New(p), status.New(p))
 	return h
 }
 
@@ -114,12 +122,31 @@ func (h *harness) panelRequest(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		h.live = json.RawMessage(r.Form.Get("xraySetting"))
 		h.writes++
+		// Like the panel, only a running core is reconciled with the new config.
+		if h.xray == "running" {
+			h.startLocked()
+		}
 		h.mu.Unlock()
 		reply(w, nil)
+	case "/server/restartXrayService":
+		h.mu.Lock()
+		h.restarts++
+		h.startLocked()
+		h.mu.Unlock()
+		reply(w, nil)
+	case "/xray/getXrayResult":
+		reply(w, "")
 	case "/xray/routeTest":
 		reply(w, map[string]any{"matched": true, "outboundTag": "C"})
 	case "/server/status":
-		reply(w, map[string]any{"cpu": 12.5, "xray": map[string]any{"state": "running", "version": "test"}})
+		h.mu.Lock()
+		state := h.xray
+		h.mu.Unlock()
+		msg := ""
+		if state == "error" {
+			msg = "Failed to start: outbound " + brokenMarker
+		}
+		reply(w, map[string]any{"cpu": 12.5, "xray": map[string]any{"state": state, "errorMsg": msg, "version": "test"}})
 	case "/xray/outbound-subs":
 		reply(w, []any{})
 	default:
@@ -127,6 +154,39 @@ func (h *harness) panelRequest(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unexpected request", 500)
 	}
 }
+
+// startLocked models a core start: it dies on a template it cannot run.
+func (h *harness) startLocked() {
+	h.xray = "running"
+	var tpl struct {
+		Routing struct {
+			Rules []struct {
+				OutboundTag string `json:"outboundTag"`
+			} `json:"rules"`
+		} `json:"routing"`
+	}
+	_ = json.Unmarshal(h.live, &tpl)
+	for _, r := range tpl.Routing.Rules {
+		if r.OutboundTag == brokenMarker {
+			h.xray = "error"
+		}
+	}
+}
+
+// saw reports whether any screen sent to chat contains want, for text that a
+// later message (such as the verification report) has scrolled past.
+func (h *harness) saw(chat int64, want string) {
+	h.t.Helper()
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, s := range h.screens {
+		if s.ChatID == chat && strings.Contains(s.Text, want) {
+			return
+		}
+	}
+	h.t.Fatalf("no screen for chat %d contains %q", chat, want)
+}
+
 func (h *harness) send(chat int64, text string) {
 	h.bot.HandleUpdate(context.Background(), telego.Update{Message: &telego.Message{MessageID: 10000, Chat: telego.Chat{ID: chat, Type: "private"}, Text: text}})
 }

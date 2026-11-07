@@ -102,3 +102,41 @@ func TestGetSnapshotRejectsUnknownID(t *testing.T) {
 		t.Fatal("unknown snapshot id must error")
 	}
 }
+
+// The probation window must outlive the process: a bot restarted inside it
+// would otherwise make an unconfirmed change permanent.
+func TestConfirmationSurvivesReopeningTheStore(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewStore(dir, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.LoadConfirmation(); !errors.Is(err, ErrNoConfirmation) {
+		t.Fatalf("fresh store: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Minute).Round(time.Second)
+	if err := s.SaveConfirmation(&Confirmation{SnapshotID: "snap", Applied: json.RawMessage(`{"a":1}`), Deadline: deadline, ChatID: 7}); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewStore(dir, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := reopened.LoadConfirmation()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.SnapshotID != "snap" || c.ChatID != 7 || !c.Deadline.Equal(deadline) {
+		t.Fatalf("round trip lost fields: %+v", c)
+	}
+	assertJSONEqual(t, c.Applied, `{"a":1}`)
+	if err := reopened.ClearConfirmation(); err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.ClearConfirmation(); err != nil {
+		t.Fatalf("clearing twice: %v", err)
+	}
+	if _, err := reopened.LoadConfirmation(); !errors.Is(err, ErrNoConfirmation) {
+		t.Fatalf("after clear: %v", err)
+	}
+}
