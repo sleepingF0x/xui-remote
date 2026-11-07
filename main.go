@@ -37,6 +37,10 @@ func main() {
 		log.Fatalf("配置错误: %v", err)
 	}
 
+	for _, w := range cfg.Warnings() {
+		log.Printf("配置警告: %s", w)
+	}
+
 	api := panel.New(panel.Options{
 		BaseURL:     cfg.Panel.BaseURL,
 		Token:       cfg.Panel.APIToken,

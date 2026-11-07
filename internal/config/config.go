@@ -113,11 +113,20 @@ func (c *Config) validate() error {
 	return nil
 }
 
-func (c *Config) IsAllowed(chatID int64) bool {
+// Warnings flags settings that load but cannot do what they look like they do.
+func (c *Config) Warnings() []string {
+	var groups, users int
 	for _, id := range c.Telegram.AllowedChatIDs {
-		if id == chatID {
-			return true
+		if id < 0 {
+			groups++
+		} else {
+			users++
 		}
 	}
-	return false
+	// A listed group only says where the bot answers; who may operate it is
+	// still the listed user ids, so a list of groups alone admits nobody.
+	if groups > 0 && users == 0 {
+		return []string{"telegram.allowed_chat_ids 只有群组 ID，群里没人能操作 Bot：请把要授权的成员的用户 ID 也加进去"}
+	}
+	return nil
 }

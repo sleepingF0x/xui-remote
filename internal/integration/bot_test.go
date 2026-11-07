@@ -60,6 +60,8 @@ type harness struct {
 
 const brokenMarker = "BROKEN"
 
+const groupChat = -100123
+
 const initial = `{"outbounds":[{"tag":"A","protocol":"freedom"},{"tag":"B","protocol":"freedom"},{"tag":"C","protocol":"freedom"}],"routing":{"rules":[{"type":"field","domain":["domain:a.test"],"outboundTag":"A"},{"type":"field","domain":["domain:b.test"],"outboundTag":"B"},{"type":"field","domain":["domain:c.test"],"outboundTag":"C"}],"balancers":[{"tag":"auto","selector":["A"]}]}}`
 
 func newHarness(t *testing.T, template string, hook func(http.ResponseWriter, *http.Request) bool, opts ...txn.Option) *harness {
@@ -98,7 +100,9 @@ func newHarness(t *testing.T, template string, hook func(http.ResponseWriter, *h
 	h.store = st
 	h.manager = txn.New(p, st, append([]txn.Option{txn.WithSettle(0)}, opts...)...)
 	h.config = configtxn.New(h.manager, verify.New(p))
-	h.bot = bot.NewWithAPI(api, []int64{1, 2})
+	// 1 and 2 are operators; groupChat is a group they share. Anyone else,
+	// including other members of that group, is unlisted.
+	h.bot = bot.NewWithAPI(api, []int64{1, 2, groupChat})
 	h.bot.Register(routing.New(h.manager), outbound.New(p, h.manager), inbound.New(p), routetest.New(p, h.manager), h.config, client.New(p), status.New(p))
 	return h
 }
@@ -187,8 +191,18 @@ func (h *harness) saw(chat int64, want string) {
 	h.t.Fatalf("no screen for chat %d contains %q", chat, want)
 }
 
-func (h *harness) send(chat int64, text string) {
-	h.bot.HandleUpdate(context.Background(), telego.Update{Message: &telego.Message{MessageID: 10000, Chat: telego.Chat{ID: chat, Type: "private"}, Text: text}})
+// send posts text in a private chat, where the chat id is the sender's id.
+func (h *harness) send(chat int64, text string) { h.sendAs(chat, chat, text) }
+
+func (h *harness) sendAs(chat, user int64, text string) {
+	h.bot.HandleUpdate(context.Background(), telego.Update{Message: &telego.Message{MessageID: 10000, Chat: chatOf(chat), From: &telego.User{ID: user}, Text: text}})
+}
+
+func chatOf(id int64) telego.Chat {
+	if id < 0 {
+		return telego.Chat{ID: id, Type: "supergroup"}
+	}
+	return telego.Chat{ID: id, Type: "private"}
 }
 func (h *harness) last(chat int64) screen {
 	h.t.Helper()
@@ -221,8 +235,10 @@ func (h *harness) press(chat int64, label string) {
 	}
 	h.tap(chat, s.MessageID, data)
 }
-func (h *harness) tap(chat int64, id int, data string) {
-	h.bot.HandleUpdate(context.Background(), telego.Update{CallbackQuery: &telego.CallbackQuery{ID: "callback", Data: data, Message: &telego.Message{MessageID: id, Chat: telego.Chat{ID: chat, Type: "private"}}}})
+func (h *harness) tap(chat int64, id int, data string) { h.tapAs(chat, chat, id, data) }
+
+func (h *harness) tapAs(chat, user int64, id int, data string) {
+	h.bot.HandleUpdate(context.Background(), telego.Update{CallbackQuery: &telego.CallbackQuery{ID: "callback", From: telego.User{ID: user}, Data: data, Message: &telego.Message{MessageID: id, Chat: chatOf(chat)}}})
 }
 func (h *harness) contains(chat int64, want string) {
 	h.t.Helper()

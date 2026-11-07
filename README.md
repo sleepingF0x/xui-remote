@@ -32,7 +32,7 @@ cp config.example.yaml config.yaml
 | `panel.base_url` | 面板地址 + `webBasePath` + `panel/api/`，见下方示例 |
 | `panel.api_token` | 面板中创建的管理员 API Token |
 | `telegram.token` | 向 Telegram 的 @BotFather 创建 Bot 后取得的 Token |
-| `telegram.allowed_chat_ids` | 允许操作的聊天 ID，替换示例中的 `0`；个人 ID 可向 @userinfobot 查询 |
+| `telegram.allowed_chat_ids` | 允许操作的用户 ID，替换示例中的 `0`；个人 ID 可向 @userinfobot 查询。要在群里使用，再加上群 ID，群里只有同样列出的成员才能操作 |
 
 比如面板地址是 `http://127.0.0.1:2053`，`webBasePath` 是 `/panel/`，则 API 地址为 `http://127.0.0.1:2053/panel/panel/api/`。两个 `panel` 都要保留。其他配置见 [config.example.yaml](config.example.yaml)。
 
