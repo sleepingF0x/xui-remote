@@ -19,6 +19,7 @@ import (
 	"os"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,6 +94,91 @@ func TestPanelContract(t *testing.T) {
 			t.Log("\n" + out.String())
 			if err != nil {
 				t.Fatal(err)
+			}
+		}},
+
+		{"client writes change one field and undo restores the credentials", func(t *testing.T) {
+			inbounds, err := p.ListInbounds()
+			if err != nil || len(inbounds) == 0 {
+				t.Fatalf("list inbounds: %v %v", inbounds, err)
+			}
+			const email = "contract-mgmt@xui-remote.test"
+			_ = p.DeleteClient(email)
+			if err := p.CreateClient(map[string]any{
+				"email": email, "enable": true, "totalGB": int64(10) << 30, "expiryTime": 0,
+				"limitIp": 2, "comment": "keep me",
+			}, []int{inbounds[0].Id}); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			t.Cleanup(func() { _ = p.DeleteClient(email) })
+			before, err := p.GetClient(email)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if before.String("uuid") == "" || before.String("subId") == "" {
+				t.Fatalf("the panel did not fill credentials: %v", before.Record)
+			}
+
+			// The panel replaces non-credential fields on update, so this is
+			// where a wrong record-to-client mapping would wipe something.
+			if err := p.UpdateClient(email, func(c map[string]any) { c["totalGB"] = int64(100) << 30 }); err != nil {
+				t.Fatalf("update quota: %v", err)
+			}
+			expiry := time.Now().AddDate(0, 0, 30).UnixMilli()
+			if err := p.UpdateClient(email, func(c map[string]any) { c["expiryTime"] = expiry }); err != nil {
+				t.Fatalf("update expiry: %v", err)
+			}
+			after, err := p.GetClient(email)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Int("totalGB") != 100<<30 || after.Int("expiryTime") != expiry {
+				t.Fatalf("writes did not land: totalGB=%d expiryTime=%d", after.Int("totalGB"), after.Int("expiryTime"))
+			}
+			for _, k := range []string{"uuid", "subId", "comment", "flow", "email"} {
+				if after.String(k) != before.String(k) {
+					t.Fatalf("%s changed from %q to %q", k, before.String(k), after.String(k))
+				}
+			}
+			if after.Int("limitIp") != 2 || !after.Bool("enable") {
+				t.Fatalf("limitIp/enable lost: %v", after.Record)
+			}
+
+			if err := p.SetClientEnabled(email, false); err != nil {
+				t.Fatal(err)
+			}
+			if d, _ := p.GetClient(email); d == nil || d.Bool("enable") {
+				t.Fatal("not disabled")
+			}
+			if err := p.SetClientEnabled(email, true); err != nil {
+				t.Fatal(err)
+			}
+			if err := p.ResetClientTraffic(email); err != nil {
+				t.Fatalf("reset traffic: %v", err)
+			}
+
+			saved, _ := p.GetClient(email)
+			if err := p.DeleteClient(email); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := p.GetClient(email); err == nil {
+				t.Fatal("still there after delete")
+			}
+			if err := p.CreateClient(saved.AsClient(), saved.InboundIds); err != nil {
+				t.Fatalf("recreate from the saved record: %v", err)
+			}
+			restored, err := p.GetClient(email)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range []string{"uuid", "subId", "comment"} {
+				if restored.String(k) != saved.String(k) {
+					t.Fatalf("undo restored %s as %q, want %q", k, restored.String(k), saved.String(k))
+				}
+			}
+			links, err := p.SubLinks(restored.String("subId"))
+			if err != nil || len(links) == 0 || !strings.Contains(links[0], restored.String("uuid")) {
+				t.Fatalf("restored client's links do not carry its UUID: %v %v", links, err)
 			}
 		}},
 

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -252,5 +253,24 @@ func TestGetXraySettingHandlesTheDoubleEncodedEnvelope(t *testing.T) {
 	}
 	if _, ok := tpl["routing"]; !ok {
 		t.Fatalf("template lost routing: %s", got.Template)
+	}
+}
+
+// The update endpoint takes the client shape, not the stored record: sending
+// the record's numeric id as the client id would fail to decode, and dropping
+// the UUID would make the panel mint a new one and break every share link.
+func TestRecordConvertsToTheClientShapeTheWriteEndpointsTake(t *testing.T) {
+	var rec map[string]any
+	_ = json.Unmarshal([]byte(`{"id":7,"uuid":"u-1","email":"a@x","subId":"s1","totalGB":1073741824,
+"expiryTime":0,"enable":true,"comment":"keep me","limitIp":2,"createdAt":1700,"updatedAt":1800,
+"allowedIPs":"10.0.0.2/32, 10.0.0.3/32","reverse":"","keepAlive":0,"flow":"xtls-rprx-vision","futureField":"x"}`), &rec)
+	got := (&ClientDetail{Record: rec}).AsClient()
+	want := map[string]any{
+		"id": "u-1", "email": "a@x", "subId": "s1", "totalGB": float64(1073741824), "expiryTime": float64(0),
+		"enable": true, "comment": "keep me", "limitIp": float64(2), "created_at": int64(1700),
+		"allowedIPs": []string{"10.0.0.2/32", "10.0.0.3/32"}, "flow": "xtls-rprx-vision", "futureField": "x",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("AsClient:\n got %#v\nwant %#v", got, want)
 	}
 }

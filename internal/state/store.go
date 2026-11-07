@@ -254,3 +254,82 @@ func writeAtomic(path string, v any) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// DeletedClient is enough to recreate a deleted client with the same
+// credentials and subscription id, so the configs and links already handed
+// out keep working after an undo. Only its traffic counters are lost.
+type DeletedClient struct {
+	At         time.Time      `json:"at"`
+	Email      string         `json:"email"`
+	Client     map[string]any `json:"client"`
+	InboundIds []int          `json:"inbound_ids"`
+}
+
+// maxDeletedClients bounds the undo history; older deletions age out.
+const maxDeletedClients = 20
+
+func (s *Store) deletedClientsPath() string { return filepath.Join(s.dir, "deleted_clients.json") }
+
+func (s *Store) loadDeletedLocked() ([]DeletedClient, error) {
+	raw, err := os.ReadFile(s.deletedClientsPath())
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var list []DeletedClient
+	if err := json.Unmarshal(raw, &list); err != nil {
+		return nil, err
+	}
+	return list, nil
+}
+
+// SaveDeletedClient records a client about to be deleted, replacing an older
+// record of the same email.
+func (s *Store) SaveDeletedClient(d DeletedClient) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.loadDeletedLocked()
+	if err != nil {
+		return err
+	}
+	kept := []DeletedClient{d}
+	for _, old := range list {
+		if old.Email != d.Email && len(kept) < maxDeletedClients {
+			kept = append(kept, old)
+		}
+	}
+	return writeAtomic(s.deletedClientsPath(), kept)
+}
+
+func (s *Store) DeletedClient(email string) (*DeletedClient, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.loadDeletedLocked()
+	if err != nil {
+		return nil, false
+	}
+	for _, d := range list {
+		if d.Email == email {
+			return &d, true
+		}
+	}
+	return nil, false
+}
+
+func (s *Store) ForgetDeletedClient(email string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	list, err := s.loadDeletedLocked()
+	if err != nil {
+		return err
+	}
+	kept := list[:0]
+	for _, d := range list {
+		if d.Email != email {
+			kept = append(kept, d)
+		}
+	}
+	return writeAtomic(s.deletedClientsPath(), kept)
+}

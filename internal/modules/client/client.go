@@ -1,6 +1,6 @@
-// Package client looks up clients and hands out their subscription and share
-// links. Everything here is read-only and takes effect immediately, so it does
-// not touch the config staging area.
+// Package client manages clients: lookup, subscription and share links, and the
+// writes in manage.go. Client changes take effect on the panel immediately, so
+// none of this touches the config staging area.
 package client
 
 import (
@@ -15,6 +15,7 @@ import (
 	"github.com/sleepingF0x/xui-remote/internal/bot"
 	"github.com/sleepingF0x/xui-remote/internal/detect"
 	"github.com/sleepingF0x/xui-remote/internal/panel"
+	"github.com/sleepingF0x/xui-remote/internal/state"
 )
 
 // clientsPerPage keeps the button column readable; the panel pages server-side
@@ -23,9 +24,11 @@ const clientsPerPage = 8
 
 type Module struct {
 	panel *panel.Client
+	// store keeps what an undo of a deletion needs.
+	store *state.Store
 }
 
-func New(p *panel.Client) *Module { return &Module{panel: p} }
+func New(p *panel.Client, s *state.Store) *Module { return &Module{panel: p, store: s} }
 
 func (m *Module) Name() string  { return "client" }
 func (m *Module) Title() string { return "👥 客户端" }
@@ -121,9 +124,9 @@ func (m *Module) list(c *bot.Context, page int, filter string, replace bool) err
 		searchAction = "clearsearch"
 	}
 	rows = append(rows, []telego.InlineKeyboardButton{
+		bot.Button("+ 新增客户端", c.CallbackData("new")),
 		bot.Button(searchLabel, c.CallbackData(searchAction)),
-		bot.Home(),
-	})
+	}, []telego.InlineKeyboardButton{bot.Home()})
 
 	if replace {
 		return c.Replace(sb.String(), bot.Keyboard(rows...))
@@ -145,6 +148,9 @@ func slimTraffic(it panel.ClientSlim) string {
 func slimExpiry(it panel.ClientSlim) string {
 	if it.ExpiryTime == 0 {
 		return "不过期"
+	}
+	if it.ExpiryTime < 0 {
+		return expiryText(it.ExpiryTime)
 	}
 	left := time.Until(time.UnixMilli(it.ExpiryTime))
 	if left <= 0 {
@@ -187,6 +193,10 @@ func (m *Module) Callback(c *bot.Context, action string, args []string) error {
 		c.Await("search")
 		return c.Replace("发送客户端标识片段搜索，发送 <code>-</code> 显示全部：",
 			bot.Keyboard(bot.InlineRow(bot.BackTo(c, "返回列表", "list"))))
+	}
+
+	if handled, err := m.manageCallback(c, action, args); handled {
+		return err
 	}
 
 	email, ok := resolve(c, args)
@@ -267,7 +277,16 @@ func resolve(c *bot.Context, args []string) (string, bool) {
 	return c.Unstash(value)
 }
 
+// viewWithNote shows the client after a change, with what changed on top.
+func (m *Module) viewWithNote(c *bot.Context, email, note string) error {
+	return m.render(c, email, note, true)
+}
+
 func (m *Module) view(c *bot.Context, email string, replace bool) error {
+	return m.render(c, email, "", replace)
+}
+
+func (m *Module) render(c *bot.Context, email, note string, replace bool) error {
 	if email == "" {
 		return fmt.Errorf("没有指定客户端")
 	}
@@ -277,6 +296,9 @@ func (m *Module) view(c *bot.Context, email string, replace bool) error {
 	}
 
 	var sb strings.Builder
+	if note != "" {
+		sb.WriteString(note + "\n\n")
+	}
 	sb.WriteString(fmt.Sprintf("<b>👤 %s</b>\n\n", bot.Escape(email)))
 	sb.WriteString("状态    " + enabledText(t.Enable) + "\n")
 	sb.WriteString("流量    " + trafficText(t) + "\n")
@@ -286,16 +308,30 @@ func (m *Module) view(c *bot.Context, email string, replace bool) error {
 	}
 
 	token := stashedRef(c, email)
+	toggle := "⏸ 停用"
+	if !t.Enable {
+		toggle = "▶️ 启用"
+	}
 	kb := bot.Keyboard(
 		bot.InlineRow(
 			bot.Button("订阅链接", c.CallbackData("sub", token)),
 			bot.Button("单条链接", c.CallbackData("links", token)),
+			bot.Button("二维码", c.CallbackData("qr", token)),
 		),
 		bot.InlineRow(
-			bot.Button("二维码", c.CallbackData("qr", token)),
-			bot.Button("刷新", c.CallbackData("view", token)),
+			bot.Button("⏳ 有效期", c.CallbackData("exp", token)),
+			bot.Button("📦 流量额度", c.CallbackData("quota", token)),
 		),
-		bot.InlineRow(c.ReturnButton("← 返回列表", "client:list"), bot.Home()),
+		bot.InlineRow(
+			bot.Button("🔄 清零流量", c.CallbackData("reset", token)),
+			bot.Button(toggle, c.CallbackData("toggle", token)),
+			bot.Button("🗑 删除", c.CallbackData("del", token)),
+		),
+		bot.InlineRow(
+			bot.Button("刷新", c.CallbackData("view", token)),
+			c.ReturnButton("← 返回列表", "client:list"),
+			bot.Home(),
+		),
 	)
 	if replace {
 		return c.Replace(sb.String(), kb)
@@ -421,6 +457,10 @@ func trafficText(t *panel.ClientTraffic) string {
 func expiryText(millis int64) string {
 	if millis == 0 {
 		return "永不过期"
+	}
+	// The panel stores "expires N days after first use" as -N days in ms.
+	if millis < 0 {
+		return fmt.Sprintf("首次使用后 %d 天", -millis/(24*int64(time.Hour/time.Millisecond)))
 	}
 	t := time.UnixMilli(millis)
 	left := time.Until(t)
